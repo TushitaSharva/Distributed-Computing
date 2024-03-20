@@ -50,7 +50,7 @@
 #include <fstream>
 #include <atomic>
 #include <mutex>
-#include <pthread.h>
+#include <thread>
 #define D 1
 #define REQ 1
 #define REP 2
@@ -86,9 +86,8 @@ double Timer(float exp_time)
     return distr(generate);
 }
 
-void *criticalSection(void *args)
+void criticalSection(my_data *data)
 {
-    my_data *data = (my_data *)args;
     grantWithMe = true;
     inCS = true;
     sleep(Timer(data->beta));
@@ -113,13 +112,11 @@ void *criticalSection(void *args)
         }
     }
 
-    return (void *)NULL;
+    return;
 }
 
-void *performer_func(void *args)
+void performer_func(my_data *data)
 {
-    my_data *data = (my_data *)args;
-
     while (data->requests_sent < data->total_requests)
     {
         request_time = -1;
@@ -150,12 +147,11 @@ void *performer_func(void *args)
         }
     }
 
-    return (void *)NULL;
+    return;
 }
 
-void *reciever_func(void *args)
+void reciever_func(my_data *data)
 {
-    my_data *data = (my_data *)args;
     while (true)
     {
         int recv_msg = 0;
@@ -205,7 +201,7 @@ void *reciever_func(void *args)
             break;
         }
     }
-    return (void *)NULL;
+    return;
 }
 
 int main(int argc, char *argv[])
@@ -243,14 +239,11 @@ int main(int argc, char *argv[])
     data->alpha = alpha;
     data->beta = beta;
 
-    pthread_t listener;
-    pthread_t performer;
+    std::thread listener;
+    std::thread performer;
 
-    pthread_create(&listener, NULL, &reciever_func, data);
-    pthread_create(&listener, NULL, &performer_func, data);
-
-    pthread_join(listener, NULL);
-    pthread_join(performer, NULL);
+    listener = std::thread(reciever_func, data);
+    performer = std::thread(performer_func, data);
     delete data;
 
     MPI_Finalize();
