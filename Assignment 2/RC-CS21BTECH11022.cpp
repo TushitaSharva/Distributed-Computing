@@ -86,6 +86,36 @@ double Timer(float exp_time)
     return distr(generate);
 }
 
+void *criticalSection(void *args)
+{
+    my_data *data = (my_data *)args;
+    grantWithMe = true;
+    inCS = true;
+    sleep(Timer(data->beta));
+    inCS = false;
+    data->requests_sent++;
+
+    for (auto i : defSet)
+    {
+        MPI_Send(&data->lamport_clock, 1, MPI_INT, i, REP, MPI_COMM_WORLD);
+        defSet.erase(i);
+    }
+
+    if (data->requests_sent == data->total_requests)
+    {
+        done++;
+        for (int i = 0; i < data->size; i++)
+        {
+            if (i != data->pid)
+            {
+                MPI_Send(&data->lamport_clock, 1, MPI_INT, i, DONE, MPI_COMM_WORLD);
+            }
+        }
+    }
+
+    return (void *)NULL;
+}
+
 void *performer_func(void *args)
 {
     my_data *data = (my_data *)args;
@@ -121,34 +151,6 @@ void *performer_func(void *args)
     }
 
     return (void *)NULL;
-}
-
-void *criticalSection(void *args)
-{
-    my_data *data = (my_data *)args;
-    grantWithMe = true;
-    inCS = true;
-    sleep(Timer(data->beta));
-    inCS = false;
-    data->requests_sent++;
-
-    for (auto i : defSet)
-    {
-        MPI_Send(&data->lamport_clock, 1, MPI_INT, i, REP, MPI_COMM_WORLD);
-        defSet.erase(i);
-    }
-
-    if (data->requests_sent == data->total_requests)
-    {
-        done++;
-        for (int i = 0; i < data->size; i++)
-        {
-            if (i != data->pid)
-            {
-                MPI_Send(&data->lamport_clock, 1, MPI_INT, i, DONE, MPI_COMM_WORLD);
-            }
-        }
-    }
 }
 
 void *reciever_func(void *args)
@@ -251,5 +253,6 @@ int main(int argc, char *argv[])
     pthread_join(performer, NULL);
     delete data;
 
+    MPI_Finalize();
     return 0;
 }
