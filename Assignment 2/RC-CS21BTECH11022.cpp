@@ -86,28 +86,28 @@ double Timer(float exp_time)
     return distr(generate);
 }
 
-void criticalSection(my_data *data)
+void criticalSection(my_data data)
 {
     grantWithMe = true;
     inCS = true;
-    sleep(Timer(data->beta));
+    sleep(Timer(data.beta));
     inCS = false;
-    data->requests_sent++;
+    data.requests_sent++;
 
     for (auto i : defSet)
     {
-        MPI_Send(&data->lamport_clock, 1, MPI_INT, i, REP, MPI_COMM_WORLD);
+        MPI_Send(&data.lamport_clock, 1, MPI_INT, i, REP, MPI_COMM_WORLD);
         defSet.erase(i);
     }
 
-    if (data->requests_sent == data->total_requests)
+    if (data.requests_sent == data.total_requests)
     {
         done++;
-        for (int i = 0; i < data->size; i++)
+        for (int i = 0; i < data.size; i++)
         {
-            if (i != data->pid)
+            if (i != data.pid)
             {
-                MPI_Send(&data->lamport_clock, 1, MPI_INT, i, DONE, MPI_COMM_WORLD);
+                MPI_Send(&data.lamport_clock, 1, MPI_INT, i, DONE, MPI_COMM_WORLD);
             }
         }
     }
@@ -115,18 +115,18 @@ void criticalSection(my_data *data)
     return;
 }
 
-void performer_func(my_data *data)
+void performer_func(my_data data)
 {
-    while (data->requests_sent < data->total_requests)
+    while (data.requests_sent < data.total_requests)
     {
         request_time = -1;
-        data->lamport_clock += 1;
-        sleep(Timer(data->alpha));
-        request_time = data->lamport_clock;
+        data.lamport_clock += 1;
+        sleep(Timer(data.alpha));
+        request_time = data.lamport_clock;
 
         if (!grantWithMe)
         {
-            data->lamport_clock += 1;
+            data.lamport_clock += 1;
 
             for (auto i : repSet)
             {
@@ -137,7 +137,7 @@ void performer_func(my_data *data)
 
             for (auto i : reqSet)
             {
-                MPI_Send(&data->lamport_clock, 1, MPI_INT, i, REQ, MPI_COMM_WORLD);
+                MPI_Send(&data.lamport_clock, 1, MPI_INT, i, REQ, MPI_COMM_WORLD);
             }
         }
 
@@ -150,22 +150,23 @@ void performer_func(my_data *data)
     return;
 }
 
-void reciever_func(my_data *data)
+void reciever_func(my_data data)
 {
+    std::cout << data.pid << '\n';
     while (true)
     {
         int recv_msg = 0;
         MPI_Status status;
         MPI_Recv(&recv_msg, 1, MPI_INT, MPI::ANY_SOURCE, MPI::ANY_TAG, MPI_COMM_WORLD, &status);
-        data->lamport_clock = max(data->lamport_clock, recv_msg);
-        data->lamport_clock += 1;
+        data.lamport_clock = max(data.lamport_clock, recv_msg);
+        data.lamport_clock += 1;
 
         if (status.MPI_TAG == REQ)
         {
-            if ((request_time == -1 && inCS == false) || (request_time > data->lamport_clock && inCS == false))
+            if ((request_time == -1 && inCS == false) || (request_time > data.lamport_clock && inCS == false))
             {
                 grantWithMe = false;
-                MPI_Send(&data->lamport_clock, 1, MPI_INT, status.MPI_SOURCE, REP, MPI_COMM_WORLD);
+                MPI_Send(&data.lamport_clock, 1, MPI_INT, status.MPI_SOURCE, REP, MPI_COMM_WORLD);
                 repSet.insert(status.MPI_SOURCE);
             }
 
@@ -196,7 +197,7 @@ void reciever_func(my_data *data)
             done++;
         }
 
-        if(done == data->size)
+        if(done == data.size)
         {
             break;
         }
@@ -230,21 +231,20 @@ int main(int argc, char *argv[])
     }
 
     /*Initialising parameters to be sent over threads */
-    my_data *data = new my_data;
-    data->pid = pid;
-    data->size = size;
-    data->total_requests = k;
-    data->requests_sent = 0;
-    data->lamport_clock = 0;
-    data->alpha = alpha;
-    data->beta = beta;
+    my_data data;
+    data.pid = pid;
+    data.size = size;
+    data.total_requests = k;
+    data.requests_sent = 0;
+    data.lamport_clock = 0;
+    data.alpha = alpha;
+    data.beta = beta;
 
     std::thread listener;
     std::thread performer;
 
-    listener = std::thread(reciever_func, data);
-    performer = std::thread(performer_func, data);
-    delete data;
+    listener = std::thread(&reciever_func, data);
+    performer = std::thread(&performer_func, data);
 
     MPI_Finalize();
     return 0;
