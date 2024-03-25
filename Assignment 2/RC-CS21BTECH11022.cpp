@@ -161,26 +161,45 @@ void reciever_func(my_data *data)
         data->lamport_clock = max(data->lamport_clock, recv_msg);
         data->lamport_clock += 1;
 
+        int sender = status.MPI_SOURCE;
+
         if (status.MPI_TAG == REQ)
         {
-            if ((request_time == -1 && inCS == false) || (request_time > data->lamport_clock && inCS == false))
+            if(inCS == true) // If I am currently executing critical section, I will put the incoming request in defSet
             {
-                grantWithMe = false;
-                MPI_Send(&data->lamport_clock, 1, MPI_INT, status.MPI_SOURCE, REP, MPI_COMM_WORLD);
-                repSet.insert(status.MPI_SOURCE);
+                defSet.insert(sender);
+            }
+
+            else if(request_time != -1 && recv_msg > request_time) // I am not in CS, I am requesting, but the msg I recvd has greater time stamp than me, I will put it in defSet
+            {
+                defSet.insert(sender);
+            }
+
+            else if(request_time != -1 && recv_msg <= request_time) // I am requesting, but the msg I recvd has smaller timestamp than me, I will reply
+            {
+                MPI_Send(&data->lamport_clock, 1, MPI_INT, sender, REP, MPI_COMM_WORLD);
+            }
+
+            else if(request_time == -1) // I am not even requesting, I will reply
+            {
+                MPI_Send(&data->lamport_clock, 1, MPI_INT, sender, REP, MPI_COMM_WORLD);
             }
 
             else
             {
-                defSet.insert(status.MPI_SOURCE);
+                std::cout << "Request time " << request_time << "\n";
+                std::cout << "Message time " << recv_msg << "\n";
+                std::cout << "My req time " << request_time << "\n";
+                std::cout << "IN CS? " << inCS << "\n";
+                std::cout << "Error Here\n";
             }
         }
 
         else if (status.MPI_TAG == REP)
         {
-            reqSet.erase(status.MPI_SOURCE);
+            reqSet.erase(status.MPI_SOURCE); // When I recieve a reply, I will remove from the reqSet, impyling my request has been catered with their reply
 
-            if (reqSet.empty() == true)
+            if (reqSet.empty() == true) // If everyone I requested got a reply, ready to enter CS, but before that, I will modify the list I need to request before entering the CS next time.
             {
                 for (auto i : repSet)
                 {
@@ -202,6 +221,7 @@ void reciever_func(my_data *data)
             break;
         }
     }
+
     return;
 }
 
