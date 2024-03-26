@@ -78,7 +78,7 @@ int done;
 bool inCS = false;
 bool sent = false;
 int request_time = -1; // Stores the time of requesting
-bool grantWithMe = false;
+int grantWithMe = 0;
 
 /* Helper Function: Generates a random number from an exponential distribution with a mean of 'exp_time'. */
 double Timer(float exp_time)
@@ -91,20 +91,12 @@ double Timer(float exp_time)
 /* Function to simulate critical section */
 void criticalSection(my_data *data)
 {
-    std::cout << data->pid << " "; std::cout << "I entered CS " << data->requests_sent << "times\n";
-
-    grantWithMe = true;
     inCS = true;
-    sleep(Timer(data->beta));
-    inCS = false;
     data->requests_sent++;
-
-    std::cout << "Pid " << data->pid << ": ";
-    for(auto i : defSet)
-    {
-        std::cout << i << " " ;
-    }
-    std::cout << "\n";
+    std::cout << data->pid << " "; std::cout << "I entered CS " << data->requests_sent<< " times\n";
+    sleep(Timer(data->beta));
+    std::cout << data->pid << " "; std::cout << "I left CS " << data->requests_sent << " times\n";
+    inCS = false;
 
     for (auto i : defSet)
     {
@@ -140,10 +132,11 @@ void performer_func(my_data *data)
             request_time = data->lamport_clock;
         }
 
-        if (grantWithMe)
+        if (grantWithMe == data->pid)
         {
             std::cout << data->pid << " "; std::cout << "Grant is with me, I am entering\n";
             criticalSection(data);
+            sent = false;
             std::cout << data->pid << " "; std::cout << "Came here after CS-1\n";
         }
 
@@ -206,7 +199,7 @@ void reciever_func(my_data *data)
             {
                 std::cout << data->pid << " "; std::cout << "I recieved request from " << sender << ", I am sending reply1\n";
                 MPI_Send(&data->lamport_clock, 1, MPI_INT, sender, REP, MPI_COMM_WORLD);
-                grantWithMe = false;
+                grantWithMe = -1;
             }
 
             else if (request_time != -1 && recv_msg == request_time)
@@ -221,7 +214,7 @@ void reciever_func(my_data *data)
                 {
                     std::cout << data->pid << " "; std::cout << "I recieved request from " << sender << ", I am sending reply0\n";
                     MPI_Send(&data->lamport_clock, 1, MPI_INT, sender, REP, MPI_COMM_WORLD);
-                    grantWithMe = false;
+                    grantWithMe = -1;
                 }
             }
 
@@ -229,7 +222,7 @@ void reciever_func(my_data *data)
             {
                 std::cout << data->pid << " "; std::cout << "I recieved request from " << sender << ", I am sending reply2\n";
                 MPI_Send(&data->lamport_clock, 1, MPI_INT, sender, REP, MPI_COMM_WORLD);
-                grantWithMe = false;
+                grantWithMe = -1;
             }
 
             else
@@ -244,20 +237,19 @@ void reciever_func(my_data *data)
 
         else if (status.MPI_TAG == REP)
         {
-            std::cout << data->pid << " "; std::cout << "I recieved reply\n";
             reqSet.erase(status.MPI_SOURCE); // When I recieve a reply, I will remove from the reqSet, impyling my request has been catered with their reply
+            std::cout << data->pid << " "; std::cout << "I recieved reply\n";
 
             if (reqSet.empty() == true) // If everyone I requested got a reply, ready to enter CS, but before that, I will modify the list I need to request before entering the CS next time.
             {
                 for (auto i : repSet)
                 {
                     reqSet.insert(i);
-                    repSet.erase(i);
                 }
 
-                criticalSection(data);
-                std::cout << data->pid << " "; std::cout << "Came here after CS-2\n";
-                sent = false;
+                repSet.clear();
+
+                grantWithMe = data->pid;
             }
         }
 
@@ -321,7 +313,8 @@ int main(int argc, char *argv[])
     listener.join();
     performer.join();
 
-    delete data;
+    std::cout << "Exited\n";
     MPI_Finalize();
+    delete data;
     return 0;
 }
