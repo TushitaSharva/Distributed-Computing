@@ -46,6 +46,7 @@
 #include <sstream>
 #include <mpi.h>
 #include <mutex>
+#include <condition_variable>
 #include <time.h>
 #include <chrono>
 #include <fstream>
@@ -74,10 +75,11 @@ ifstream inputfile;
 set<int> reqSet;
 set<int> defSet;
 set<int> repSet;
+condition_variable cv;
+mutex mtx;
+bool ready = false;
 int done;
-mutex cs_lock;
 bool inCS = false;
-bool sent = false;
 int request_time = -1; // Stores the time of requesting
 int grantWithMe = 0;
 
@@ -94,11 +96,11 @@ void criticalSection(my_data *data)
 {
     inCS = true;
     data->requests_sent++;
-    std::cout << data->pid << " "; std::cout << "I entered CS " << data->requests_sent<< " times\n";
-    cs_lock.lock();
+    std::cout << data->pid << " ";
+    std::cout << "I entered CS " << data->requests_sent << " times\n";
     sleep(Timer(data->beta));
-    cs_lock.unlock();
-    std::cout << data->pid << " "; std::cout << "I left CS " << data->requests_sent << " times\n";
+    std::cout << data->pid << " ";
+    std::cout << "I left CS " << data->requests_sent << " times\n";
     inCS = false;
 
     for (auto i : defSet)
@@ -119,7 +121,8 @@ void criticalSection(my_data *data)
         }
     }
 
-    std::cout << data->pid << " "; std::cout << "Leaving CS\n";
+    std::cout << data->pid << " ";
+    std::cout << "Leaving CS\n";
     return;
 }
 
@@ -127,25 +130,25 @@ void performer_func(my_data *data)
 {
     while (data->requests_sent < data->total_requests)
     {
-        if(sent == false)
-        {
-            request_time = -1;
-            data->lamport_clock += 1;
-            sleep(Timer(data->alpha));
-            request_time = data->lamport_clock;
-        }
+
+        request_time = -1;
+        data->lamport_clock += 1;
+        sleep(Timer(data->alpha));
+        request_time = data->lamport_clock;
 
         if (grantWithMe == data->pid)
         {
-            std::cout << data->pid << " "; std::cout << "Grant is with me, I am entering\n";
+            std::cout << data->pid << " ";
+            std::cout << "Grant is with me, I am entering\n";
             criticalSection(data);
-            sent = false;
-            std::cout << data->pid << " "; std::cout << "Came here after CS-1\n";
+            std::cout << data->pid << " ";
+            std::cout << "Came here after CS-1\n";
         }
 
-        else if (sent == false)
+        else
         {
-            std::cout << data->pid << " ";  std::cout << "Grant is not with me, I am requesting\n";
+            std::cout << data->pid << " ";
+            std::cout << "Grant is not with me, I am requesting\n";
             data->lamport_clock += 1;
             request_time = data->lamport_clock;
 
@@ -160,12 +163,14 @@ void performer_func(my_data *data)
             {
                 MPI_Send(&data->lamport_clock, 1, MPI_INT, i, REQ, MPI_COMM_WORLD);
             }
-            sent = true;
-        }
 
-        else
-        {
-            continue;
+            {
+                unique_lock<mutex> lock(mtx);
+                std::cout << data->pid << " ";
+                std::cout << "Notif: All replies are recieved\n";
+                cv.wait(lock, []{ return ready; });
+                criticalSection(data);
+            }
         }
     }
 
@@ -188,69 +193,77 @@ void reciever_func(my_data *data)
         {
             if (inCS == true) // If I am currently executing critical section, I will put the incoming request in defSet
             {
-                std::cout << data->pid << " "; std::cout << "I recieved request from " << sender << ", I am putting in defSet1\n";
+                std::cout << data->pid << " ";
+                std::cout << "I recieved request from " << sender << ", I am putting in defSet1\n";
                 defSet.insert(sender);
             }
 
             else if (request_time != -1 && recv_msg > request_time) // I am not in CS, I am requesting, but the msg I recvd has greater time stamp than me, I will put it in defSet
             {
-                std::cout << data->pid << " "; std::cout << "I recieved request from " << sender << ", I am putting in defSet2\n";
+                std::cout << data->pid << " ";
+                std::cout << "I recieved request from " << sender << ", I am putting in defSet2\n";
                 defSet.insert(sender);
             }
 
             else if (request_time != -1 && recv_msg < request_time) // I am requesting, but the msg I recvd has smaller timestamp than me, I will reply
             {
-                std::cout << data->pid << " "; std::cout << "I recieved request from " << sender << ", I am sending reply1\n";
-                cs_lock.lock();
+                std::cout << data->pid << " ";
+                std::cout << "I recieved request from " << sender << ", I am sending reply1\n";
                 MPI_Send(&data->lamport_clock, 1, MPI_INT, sender, REP, MPI_COMM_WORLD);
                 grantWithMe = -1;
-                cs_lock.unlock();
             }
 
             else if (request_time != -1 && recv_msg == request_time)
             {
-                if(sender > data->pid)
+                if (sender > data->pid)
                 {
-                    std::cout << data->pid << " "; std::cout << "I recieved request from " << sender << ", I am putting in defSet3\n";
+                    std::cout << data->pid << " ";
+                    std::cout << "I recieved request from " << sender << ", I am putting in defSet3\n";
                     defSet.insert(sender);
                 }
 
                 else
                 {
-                    std::cout << data->pid << " "; std::cout << "I recieved request from " << sender << ", I am sending reply0\n";
-                    cs_lock.lock();
+                    std::cout << data->pid << " ";
+                    std::cout << "I recieved request from " << sender << ", I am sending reply0\n";
                     MPI_Send(&data->lamport_clock, 1, MPI_INT, sender, REP, MPI_COMM_WORLD);
                     grantWithMe = -1;
-                    cs_lock.unlock();
                 }
             }
 
             else if (request_time == -1) // I am not even requesting, I will reply
             {
-                std::cout << data->pid << " "; std::cout << "I recieved request from " << sender << ", I am sending reply2\n";
-                cs_lock.lock();
+                std::cout << data->pid << " ";
+                std::cout << "I recieved request from " << sender << ", I am sending reply2\n";
                 MPI_Send(&data->lamport_clock, 1, MPI_INT, sender, REP, MPI_COMM_WORLD);
                 grantWithMe = -1;
-                cs_lock.unlock();
             }
 
             else
             {
-                std::cout << data->pid << " "; std::cout << "Request time " << request_time << "\n";
-                std::cout << data->pid << " "; std::cout << "Message time " << recv_msg << "\n";
-                std::cout << data->pid << " "; std::cout << "My req time " << request_time << "\n";
-                std::cout << data->pid << " "; std::cout << "IN CS? " << inCS << "\n";
-                std::cout << data->pid << " "; std::cout << "Error Here\n";
+                std::cout << data->pid << " ";
+                std::cout << "Request time " << request_time << "\n";
+                std::cout << data->pid << " ";
+                std::cout << "Message time " << recv_msg << "\n";
+                std::cout << data->pid << " ";
+                std::cout << "My req time " << request_time << "\n";
+                std::cout << data->pid << " ";
+                std::cout << "IN CS? " << inCS << "\n";
+                std::cout << data->pid << " ";
+                std::cout << "Error Here\n";
             }
         }
 
         else if (status.MPI_TAG == REP)
         {
             reqSet.erase(status.MPI_SOURCE); // When I recieve a reply, I will remove from the reqSet, impyling my request has been catered with their reply
-            std::cout << data->pid << " "; std::cout << "I recieved reply from " << sender << "\n";
+            std::cout << data->pid << " ";
+            std::cout << "I recieved reply from " << sender << "\n";
 
             if (reqSet.empty() == true) // If everyone I requested got a reply, ready to enter CS, but before that, I will modify the list I need to request before entering the CS next time.
             {
+                std::cout << data->pid << " ";
+                std::cout << "I recieved all replies!\n";
                 for (auto i : repSet)
                 {
                     reqSet.insert(i);
@@ -259,18 +272,26 @@ void reciever_func(my_data *data)
                 repSet.clear();
 
                 grantWithMe = data->pid;
+
+                {
+                    lock_guard<mutex> lock(mtx);
+                    ready = true;
+                }
+                cv.notify_all();
             }
         }
 
         else if (status.MPI_TAG == DONE)
         {
-            std::cout << data->pid << " "; std::cout << "I recieved done\n";
+            std::cout << data->pid << " ";
+            std::cout << "I recieved done\n";
             done++;
         }
 
         if (done == data->size)
         {
-            std::cout << data->pid << " "; std::cout << "I am done\n";
+            std::cout << data->pid << " ";
+            std::cout << "I am done\n";
             break;
         }
     }
