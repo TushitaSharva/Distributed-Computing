@@ -75,6 +75,7 @@ set<int> reqSet;
 set<int> defSet;
 set<int> repSet;
 int done;
+mutex cs_lock;
 bool inCS = false;
 bool sent = false;
 int request_time = -1; // Stores the time of requesting
@@ -94,7 +95,9 @@ void criticalSection(my_data *data)
     inCS = true;
     data->requests_sent++;
     std::cout << data->pid << " "; std::cout << "I entered CS " << data->requests_sent<< " times\n";
+    cs_lock.lock();
     sleep(Timer(data->beta));
+    cs_lock.unlock();
     std::cout << data->pid << " "; std::cout << "I left CS " << data->requests_sent << " times\n";
     inCS = false;
 
@@ -198,8 +201,10 @@ void reciever_func(my_data *data)
             else if (request_time != -1 && recv_msg < request_time) // I am requesting, but the msg I recvd has smaller timestamp than me, I will reply
             {
                 std::cout << data->pid << " "; std::cout << "I recieved request from " << sender << ", I am sending reply1\n";
+                cs_lock.lock();
                 MPI_Send(&data->lamport_clock, 1, MPI_INT, sender, REP, MPI_COMM_WORLD);
                 grantWithMe = -1;
+                cs_lock.unlock();
             }
 
             else if (request_time != -1 && recv_msg == request_time)
@@ -213,16 +218,20 @@ void reciever_func(my_data *data)
                 else
                 {
                     std::cout << data->pid << " "; std::cout << "I recieved request from " << sender << ", I am sending reply0\n";
+                    cs_lock.lock();
                     MPI_Send(&data->lamport_clock, 1, MPI_INT, sender, REP, MPI_COMM_WORLD);
                     grantWithMe = -1;
+                    cs_lock.unlock();
                 }
             }
 
             else if (request_time == -1) // I am not even requesting, I will reply
             {
                 std::cout << data->pid << " "; std::cout << "I recieved request from " << sender << ", I am sending reply2\n";
+                cs_lock.lock();
                 MPI_Send(&data->lamport_clock, 1, MPI_INT, sender, REP, MPI_COMM_WORLD);
                 grantWithMe = -1;
+                cs_lock.unlock();
             }
 
             else
@@ -238,7 +247,7 @@ void reciever_func(my_data *data)
         else if (status.MPI_TAG == REP)
         {
             reqSet.erase(status.MPI_SOURCE); // When I recieve a reply, I will remove from the reqSet, impyling my request has been catered with their reply
-            std::cout << data->pid << " "; std::cout << "I recieved reply\n";
+            std::cout << data->pid << " "; std::cout << "I recieved reply from " << sender << "\n";
 
             if (reqSet.empty() == true) // If everyone I requested got a reply, ready to enter CS, but before that, I will modify the list I need to request before entering the CS next time.
             {
