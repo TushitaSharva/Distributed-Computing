@@ -89,6 +89,7 @@ RECIEVES:
 #define FAIL 4
 #define INQUIRE 5
 #define YEILD 6
+#define DONE 0
 using namespace std;
 
 class my_data
@@ -104,9 +105,13 @@ public:
 };
 
 ifstream inputfile;
-bool inCS = 0;
+atomic<bool> inCS(false);
 set<int> quorum;
-int done = 0;
+set<int> grantSet;
+set<int> failSet;
+set<int> yeildSet;
+atomic<bool> done = false;
+int done_recv = 0;
 
 // Helper Function: Generates a random number from an exponential distribution with a mean of 'exp_time'.
 double Timer(float exp_time)
@@ -116,96 +121,70 @@ double Timer(float exp_time)
     return distr(generate);
 }
 
-class Compare
+/* Helper function to insert an element in the queue */
+vector<pair<int, int>> insert_queue(vector<pair<int, int>> &queue, int senderId, int time_of_request)
 {
-public:
-    bool operator()(pair<int, int> &p1, pair<int, int> &p2)
+    // in pair: {senderId, timeOfRequest}
+    auto it = queue.begin();
+
+    while (it->second < time_of_request)
     {
-        return p1.second > p2.second;
+        it++;
     }
-};
 
-void quorum_recv(my_data *data)
-{
-    std::priority_queue<pair<int, int>, vector<pair<int, int>>, Compare> pq;
-    while (true)
+    if (it->first < senderId)
     {
-        int recv_msg = 0;
-        MPI_Status status;
-        MPI_Recv(&recv_msg, 1, MPI_INT, MPI::ANY_SOURCE, MPI::ANY_TAG, MPI_COMM_WORLD, &status);
-        data->lamport_clock = max(data->lamport_clock, recv_msg);
-        data->lamport_clock += 1;
+        it++;
+    }
 
-        int tag = status.MPI_TAG;
-        int senderId = status.MPI_SOURCE;
-        int last_time_stamp = 0;
-        int last_sent_proc = 0;
+    queue.insert(it, {senderId, time_of_request});
 
-        if (tag == REQUEST)
+    return queue;
+}
+
+/* Helper function to remove an element in the queue */
+vector<pair<int, int>> remove_queue(vector<pair<int, int>> &queue, int senderId)
+{
+    auto it = queue.begin();
+
+    while (it != queue.end())
+    {
+        if (it->first == senderId)
         {
-            if (pq.empty() == true)
-            {
-                pq.push({senderId, recv_msg});
-                MPI_Send(&data->lamport_clock, 1, MPI_INT, senderId, REPLY, MPI_COMM_WORLD);
-                last_time_stamp = recv_msg;
-                last_sent_proc = senderId;
-            }
-
-            else if (recv_msg > last_time_stamp)
-            {
-                pq.push({senderId, recv_msg});
-                MPI_Send(&data->lamport_clock, 1, MPI_INT, senderId, FAIL, MPI_COMM_WORLD);
-            }
-
-            else if (recv_msg < last_time_stamp)
-            {
-                // Sending inquire
-                MPI_Send(&data->lamport_clock, 1, MPI_INT, last_sent_proc, INQUIRE, MPI_COMM_WORLD);
-
-                int recv_msg_2 = 0;
-                MPI_Status status;
-                MPI_Recv(&recv_msg_2, 1, MPI_INT, last_sent_proc, MPI::ANY_TAG, MPI_COMM_WORLD, &status);
-
-                if (status.MPI_TAG == YEILD)
-                {
-                    pq.push({senderId, recv_msg});
-                }
-
-                else if(status.MPI_TAG == RELEASE)
-                {
-                    pq.pop();
-                }
-
-                MPI_Send(&data->lamport_clock, 1, MPI_INT, senderId, REPLY, MPI_COMM_WORLD);
-            }
-        }
-
-        else if(tag == RELEASE)
-        {
-            int dest = pq.top().first;
-            MPI_Send(&data->lamport_clock, 1, MPI_INT, dest, REPLY, MPI_COMM_WORLD);            
-        }
-
-        else
-        {
-            std::cout << "Error: Recieved tag: " << tag << "\n";
+            break;
         }
     }
+
+    queue.erase(it);
+    return queue;
 }
 
 void criticalSection(my_data *data)
 {
-    inCS = data->pid;
+    data->requests_sent += 1;
+    inCS = true;
     sleep(Timer(data->beta));
+    inCS = false;
+
+    if (data->requests_sent == data->total_requests)
+    {
+        done = true;
+        for (auto i : quorum)
+        {
+            MPI_Send(&data->lamport_clock, 1, MPI_INT, i, DONE, MPI_COMM_WORLD);
+        }
+    }
+
+    return;
 }
 
 void process_send(my_data *data)
 {
-    while(data->requests_sent < data->total_requests)
+    while (data->requests_sent < data->total_requests)
     {
         sleep(Timer(data->alpha));
 
-        for(auto i : quorum)
+        for (auto i : quorum)
         {
             MPI_Send(&data->lamport_clock, 1, MPI_INT, i, REQUEST, MPI_COMM_WORLD);
         }
@@ -216,7 +195,11 @@ void process_send(my_data *data)
 
 void process_recv(my_data *data)
 {
-    while(true)
+    int last_sent_pid = 0;
+    int last_time_stamp = 0;
+    vector<pair<int, int>> queue;
+
+    while (true)
     {
         int recv_msg = 0;
         MPI_Status status;
@@ -227,13 +210,106 @@ void process_recv(my_data *data)
         int tag = status.MPI_TAG;
         int senderId = status.MPI_SOURCE;
 
-        if(tag == REQUEST)
+        if (tag == REPLY)
         {
-            if(inCS != data->pid)
+            grantSet.erase(senderId);
+            if (failSet.find(senderId) != failSet.end())
+            {
+                failSet.erase(senderId);
+            }
+
+            if (grantSet.empty() == true)
+            {
+                // Notify performer to enter CS, and also, ask to replenish the grant set
+            }
+        }
+
+        else if (tag == FAIL)
+        {
+            grantSet.insert(senderId);
+            failSet.insert(senderId);
+        }
+
+        else if (tag == INQUIRE)
+        {
+            if (failSet.empty() == false || yeildSet.empty() == false)
+            {
+                MPI_Send(&data->lamport_clock, 1, MPI_INT, senderId, YEILD, MPI_COMM_WORLD);
+                grantSet.insert(senderId);
+            }
+
+            else if (grantSet.empty() == false)
+            {
+                continue;
+            }
+
+            else if (inCS == true)
+            {
+                continue;
+            }
+
+            else
+            {
+                std::cout << "Error Processing the process reply to INQUIRE\n";
+            }
+        }
+
+        else if (tag == REQUEST)
+        {
+            int request_time = recv_msg;
+            if (last_time_stamp < request_time || (last_time_stamp == request_time && last_sent_pid < senderId))
+            {
+                MPI_Send(&data->lamport_clock, 1, MPI_INT, senderId, FAIL, MPI_COMM_WORLD);
+                queue = insert_queue(queue, senderId, request_time);
+            }
+
+            else if (last_time_stamp > request_time || (last_time_stamp == request_time && last_sent_pid > senderId))
+            {
+                MPI_Send(&data->lamport_clock, 1, MPI_INT, last_sent_pid, INQUIRE, MPI_COMM_WORLD);
+                int sub_recv = 0;
+                MPI_Status substatus;
+                MPI_Recv(&sub_recv, 1, MPI_INT, last_sent_pid, MPI::ANY_TAG, MPI_COMM_WORLD, &substatus);
+
+                int subtag = substatus.MPI_TAG;
+
+                if (subtag == RELEASE)
+                {
+                    queue = remove_queue(queue, last_sent_pid);
+                    queue = insert_queue(queue, senderId, request_time);
+                    MPI_Send(&data->lamport_clock, 1, MPI_INT, senderId, REPLY, MPI_COMM_WORLD);
+                }
+
+                else if (subtag == YEILD)
+                {
+                    queue = insert_queue(queue, senderId, request_time);
+                    MPI_Send(&data->lamport_clock, 1, MPI_INT, senderId, REPLY, MPI_COMM_WORLD);
+                }
+
+                else
+                {
+                    std::cout << "Error while recieving response to INQUIRE\n";
+                }
+            }
+
+            else
+            {
+                std::cout << "Error while processing REQUEST\n";
+            }
+        }
+
+        else if (tag == RELEASE)
+        {
+            queue = remove_queue(queue, senderId);
+            int new_dest = queue[0].first;
+            MPI_Send(&data->lamport_clock, 1, MPI_INT, new_dest, REPLY, MPI_COMM_WORLD);
+        }
+
+        else
+        {
+            std::cout << "Error, quourum recieved " << tag << " tag\n";
         }
     }
 }
-
 
 int main(int argc, char *argv[])
 {
