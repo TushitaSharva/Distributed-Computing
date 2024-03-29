@@ -66,7 +66,6 @@ RECIEVES:
 #include <iostream>
 #include <set>
 #include <utility>
-#include <queue>
 #include <random>
 #include <string.h>
 #include <unistd.h>
@@ -82,7 +81,9 @@ RECIEVES:
 #include <fstream>
 #include <atomic>
 #include <mutex>
-#include <pthread.h>
+#include <thread>
+#include <condition_variable>
+#include <mutex>
 #define REQUEST 1
 #define REPLY 2
 #define RELEASE 3
@@ -110,6 +111,9 @@ set<int> quorum;
 set<int> grantSet;
 set<int> failSet;
 set<int> yeildSet;
+condition_variable cv;
+mutex mtx;
+bool ready = false;
 atomic<bool> done = false;
 int done_recv = 0;
 
@@ -165,6 +169,7 @@ void criticalSection(my_data *data)
     inCS = true;
     sleep(Timer(data->beta));
     inCS = false;
+    ready = false;
 
     if (data->requests_sent == data->total_requests)
     {
@@ -189,7 +194,12 @@ void process_send(my_data *data)
             MPI_Send(&data->lamport_clock, 1, MPI_INT, i, REQUEST, MPI_COMM_WORLD);
         }
 
-        criticalSection(data);
+        {
+            unique_lock<mutex> lock(mtx);
+            cv.wait(lock, []
+                     { return ready; });
+            criticalSection(data);
+        }
     }
 }
 
@@ -221,6 +231,11 @@ void process_recv(my_data *data)
             if (grantSet.empty() == true)
             {
                 // Notify performer to enter CS, and also, ask to replenish the grant set
+                {
+                    lock_guard<mutex> lock(mtx);
+                    ready = true;
+                }
+                cv.notify_all();
             }
         }
 
@@ -304,11 +319,22 @@ void process_recv(my_data *data)
             MPI_Send(&data->lamport_clock, 1, MPI_INT, new_dest, REPLY, MPI_COMM_WORLD);
         }
 
+        else if (tag == DONE)
+        {
+            done_recv++;
+            if (done_recv == data->size - 1)
+            {
+                break;
+            }
+        }
+
         else
         {
-            std::cout << "Error, quourum recieved " << tag << " tag\n";
+            std::cout << "Error, process recieved " << tag << " tag\n";
         }
     }
+
+    return;
 }
 
 int main(int argc, char *argv[])
@@ -349,6 +375,15 @@ int main(int argc, char *argv[])
     data->requests_sent = 0;
     data->total_requests = k;
     data->size = size;
+
+    std::thread performer;
+    std::thread listener;
+
+    listener = std::thread(&process_recv, data);
+    performer = std::thread(&process_send, data);
+
+    listener.join();
+    performer.join();
 
     MPI_Finalize();
     delete (data);
