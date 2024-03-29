@@ -75,9 +75,12 @@ ifstream inputfile;
 set<int> reqSet;
 set<int> defSet;
 set<int> repSet;
-condition_variable cv;
-mutex mtx;
-bool ready = (false);
+condition_variable cv1;
+mutex mtx1;
+bool ready = false;
+condition_variable cv2;
+mutex mtx2;
+bool can_return = false;
 int done;
 std::atomic<bool> inCS(false);
 std::atomic<int> request_time(-1); // Stores the time of requesting
@@ -114,6 +117,16 @@ void criticalSection(my_data *data)
     if (data->requests_sent == data->total_requests)
     {
         done++;
+        if (done == data->size) // If it is becoming 4 here, notify the thread to return
+        {
+            {
+                lock_guard<mutex> lck(mtx2);
+                can_return = true;
+            }
+            cv2.notify_all();
+        }
+        std::cout << data->pid << " ";
+        std::cout << "Done is updated to " << done << "\n";
         for (int i = 0; i < data->size; i++)
         {
             if (i != data->pid)
@@ -169,10 +182,11 @@ void performer_func(my_data *data)
             }
 
             {
-                unique_lock<mutex> lock(mtx);
+                unique_lock<mutex> lock(mtx1);
                 std::cout << data->pid << " ";
                 std::cout << "Notif: All replies are recieved\n";
-                cv.wait(lock, []{ return ready; });
+                cv1.wait(lock, []
+                         { return ready; });
                 criticalSection(data);
             }
         }
@@ -283,27 +297,43 @@ void reciever_func(my_data *data)
                 grantWithMe = data->pid;
 
                 {
-                    lock_guard<mutex> lock(mtx);
+                    lock_guard<mutex> lock(mtx1);
                     ready = true;
                 }
-                cv.notify_all();
+                cv1.notify_all();
             }
         }
 
         else if (status.MPI_TAG == DONE)
         {
+            done++;
             std::cout << data->pid << " ";
             std::cout << "I recieved done from " << sender << "\n";
-            done++;
+            std::cout << data->pid << " ";
+            std::cout << "Done is updated to " << done << "\n";
         }
 
         if (done == data->size)
         {
             std::cout << data->pid << " ";
-            std::cout << "I am done\n";
+            std::cout << "I recieved done message from all, I am exiting\n";
+            break;
+        }
+
+        else if (!can_return)
+        {
+            std::cout << data->pid << " ";
+            std::cout << "I am waiting for myself to be done\n";
+            {
+                unique_lock<mutex> lck(mtx2);
+                std::cout << data->pid << " ";
+                cv1.wait(lck, []{ return can_return; });
+                std::cout << "Notif: I received the last done\n";
+            }
             break;
         }
     }
+
     return;
 }
 
