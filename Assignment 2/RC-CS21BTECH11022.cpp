@@ -77,11 +77,11 @@ set<int> defSet;
 set<int> repSet;
 condition_variable cv;
 mutex mtx;
-bool ready = false;
+bool ready = (false);
 int done;
-bool inCS = false;
-int request_time = -1; // Stores the time of requesting
-int grantWithMe = 0;
+std::atomic<bool> inCS(false);
+std::atomic<int> request_time(-1); // Stores the time of requesting
+std::atomic<int> grantWithMe(0);
 
 /* Helper Function: Generates a random number from an exponential distribution with a mean of 'exp_time'. */
 double Timer(float exp_time)
@@ -102,12 +102,14 @@ void criticalSection(my_data *data)
     std::cout << data->pid << " ";
     std::cout << "I left CS " << data->requests_sent << " times\n";
     inCS = false;
+    ready = false;
 
     for (auto i : defSet)
     {
         MPI_Send(&data->lamport_clock, 1, MPI_INT, i, REP, MPI_COMM_WORLD);
-        defSet.erase(i);
     }
+
+    defSet.clear();
 
     if (data->requests_sent == data->total_requests)
     {
@@ -116,6 +118,8 @@ void criticalSection(my_data *data)
         {
             if (i != data->pid)
             {
+                std::cout << data->pid << " ";
+                std::cout << "I am sending done to " << i << " process\n";
                 MPI_Send(&data->lamport_clock, 1, MPI_INT, i, DONE, MPI_COMM_WORLD);
             }
         }
@@ -145,7 +149,7 @@ void performer_func(my_data *data)
             std::cout << "Came here after CS-1\n";
         }
 
-        else
+        else if (grantWithMe != data->pid)
         {
             std::cout << data->pid << " ";
             std::cout << "Grant is not with me, I am requesting\n";
@@ -171,6 +175,11 @@ void performer_func(my_data *data)
                 cv.wait(lock, []{ return ready; });
                 criticalSection(data);
             }
+        }
+
+        else
+        {
+            std::cout << "Error here\n";
         }
     }
 
@@ -284,7 +293,7 @@ void reciever_func(my_data *data)
         else if (status.MPI_TAG == DONE)
         {
             std::cout << data->pid << " ";
-            std::cout << "I recieved done\n";
+            std::cout << "I recieved done from " << sender << "\n";
             done++;
         }
 
@@ -295,7 +304,6 @@ void reciever_func(my_data *data)
             break;
         }
     }
-
     return;
 }
 
@@ -343,6 +351,7 @@ int main(int argc, char *argv[])
     listener.join();
     performer.join();
 
+    std::cout << data->pid << " ";
     std::cout << "Exited\n";
     MPI_Finalize();
     delete data;
