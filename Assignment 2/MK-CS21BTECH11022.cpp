@@ -37,6 +37,8 @@
         - add the proc which sent request
         - no need to remove the proc which sent yeild
         - send reply to the requesting proc
+    - Sender's request time is larger/ same time + larger pid: Send FAIL, add in pq
+    - If pq is empty : Send reply, add in pq
     YEILD:
     - send reply to the root of pq
     RELEASE:
@@ -49,7 +51,7 @@
     CS:
     - each time enter, request++;
     if total requests reached, send done to all of it's quorum members.
-  
+
 */
 
 #include <iostream>
@@ -182,22 +184,49 @@ void process_send(my_data *data)
     }
 }
 
+/*
+    Here x.first is senderID, x.second is time_of_request
+    if a has lesser timestamp than b, a should be found before b
+    For equal timestamps, if a has lesser pid than b, a should be placed before b
+*/
 class Compare
 {
 public:
     bool operator()(pair<int, int> a, pair<int, int> b)
     {
-        if (b.second < a.second)
+        if (a.second < b.second)
         {
-            if (a.second == b.second)
-            {
-                // If time_requested is equal, compare senderID
-                return a.first > b.first; // Smaller senderID first
-            }
-            // Otherwise, compare time_requested
-            return a.second > b.second; // Least time_requested first
+            return true;
         }
-        std::cout << "Error came here\n";
+
+        else if (a.second > b.second)
+        {
+            return false;
+        }
+
+        else if (a.second == b.second)
+        {
+            if (a.first < b.first)
+            {
+                return true;
+            }
+
+            else if (a.first > b.first)
+            {
+                return false;
+            }
+
+            else
+            {
+                std::cout << "Error in comparator\n";
+            }
+        }
+
+        else
+        {
+            std::cout << "Error in comparator\n";
+        }
+
         return false;
     }
 };
@@ -218,6 +247,12 @@ void process_recv(my_data *data)
 
         int tag = status.MPI_TAG;
         int senderId = status.MPI_SOURCE;
+
+        std::cout << data->pid << " ";
+        if (pq.empty() != true)
+        {
+            std::cout << "Queue's top: (" << pq.top().first << "," << pq.top().second << ")\n";
+        }
 
         if (tag == REPLY)
         {
@@ -286,13 +321,32 @@ void process_recv(my_data *data)
             std::cout << "I recieved request from " << senderId << "\n";
             int request_time = recv_msg;
 
-            if (last_time_stamp < request_time || (last_time_stamp == request_time && last_sent_pid < senderId))
+            if(pq.empty() == true)
+            {
+                data->lamport_clock += 1;
+                std::cout << data->pid << " ";
+                std::cout << "I am sending reply to " << senderId << "\n";
+                MPI_Send(&data->lamport_clock, 1, MPI_INT, senderId, REPLY, MPI_COMM_WORLD);
+                pq.push({senderId, request_time});
+                std::cout << data->pid << " ";
+                if (pq.empty() != true)
+                {
+                    std::cout << "Queue's top: (" << pq.top().first << "," << pq.top().second << ")\n";
+                }
+            }
+
+            else if (last_time_stamp < request_time || (last_time_stamp == request_time && last_sent_pid < senderId))
             {
                 data->lamport_clock += 1;
                 std::cout << data->pid << " ";
                 std::cout << "I am sending fail to " << senderId << "\n";
                 MPI_Send(&data->lamport_clock, 1, MPI_INT, senderId, FAIL, MPI_COMM_WORLD);
                 pq.push({senderId, request_time});
+                std::cout << data->pid << " ";
+                if (pq.empty() != true)
+                {
+                    std::cout << "Queue's top: (" << pq.top().first << "," << pq.top().second << ")\n";
+                }
             }
 
             else if (last_time_stamp > request_time || (last_time_stamp == request_time && last_sent_pid > senderId))
@@ -316,6 +370,11 @@ void process_recv(my_data *data)
                     std::cout << "I recieved release from " << last_sent_pid << " sending reply to " << senderId << "\n";
                     pq.pop();
                     pq.push({senderId, data->lamport_clock});
+                    std::cout << data->pid << " ";
+                    if (pq.empty() != true)
+                    {
+                        std::cout << "Queue's top: (" << pq.top().first << "," << pq.top().second << ")\n";
+                    }
                     data->lamport_clock += 1;
                     MPI_Send(&data->lamport_clock, 1, MPI_INT, senderId, REPLY, MPI_COMM_WORLD);
                 }
@@ -325,6 +384,11 @@ void process_recv(my_data *data)
                     std::cout << data->pid << " ";
                     std::cout << "I recieved yeild from " << last_sent_pid << " sending reply to " << senderId << "\n";
                     pq.push({senderId, request_time});
+                    std::cout << data->pid << " ";
+                    if (pq.empty() != true)
+                    {
+                        std::cout << "Queue's top: (" << pq.top().first << "," << pq.top().second << ")\n";
+                    }
                     data->lamport_clock += 1;
                     MPI_Send(&data->lamport_clock, 1, MPI_INT, senderId, REPLY, MPI_COMM_WORLD);
                 }
@@ -346,6 +410,11 @@ void process_recv(my_data *data)
 
             pq.pop();
             int new_dest = pq.top().first;
+            std::cout << data->pid << " ";
+            if (pq.empty() != true)
+            {
+                std::cout << "Queue's top: (" << pq.top().first << "," << pq.top().second << ")\n";
+            }
 
             std::cout << data->pid << " ";
             std::cout << "I recieved release from " << senderId << " sending reply to " << new_dest << "\n";
