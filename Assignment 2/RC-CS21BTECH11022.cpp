@@ -104,6 +104,7 @@ void criticalSection(my_data *data)
     inCS = false;
     ready = false;
 
+    data->lamport_clock += 1;
     for (auto i : defSet)
     {
         MPI_Send(&data->lamport_clock, 1, MPI_INT, i, REP, MPI_COMM_WORLD);
@@ -115,6 +116,7 @@ void criticalSection(my_data *data)
     {
         std::cout << data->pid << " ";
         std::cout << "Done is updated to " << done << "\n";
+        data->lamport_clock += 1;
         for (int i = 0; i < data->size; i++)
         {
             if (i != data->pid)
@@ -163,7 +165,8 @@ void performer_func(my_data *data)
             }
 
             repSet.clear();
-
+            
+            data->lamport_clock += 1;
             for (auto i : reqSet)
             {
                 MPI_Send(&data->lamport_clock, 1, MPI_INT, i, REQ, MPI_COMM_WORLD);
@@ -218,6 +221,7 @@ void reciever_func(my_data *data)
 
             else if (request_time != -1 && recv_msg < request_time) // I am requesting, but the msg I recvd has smaller timestamp than me, I will reply
             {
+                data->lamport_clock += 1;
                 std::cout << data->pid << " ";
                 std::cout << "I recieved request from " << sender << ", I am sending reply1\n";
                 MPI_Send(&data->lamport_clock, 1, MPI_INT, sender, REP, MPI_COMM_WORLD);
@@ -235,6 +239,7 @@ void reciever_func(my_data *data)
 
                 else
                 {
+                    data->lamport_clock += 1;
                     std::cout << data->pid << " ";
                     std::cout << "I recieved request from " << sender << ", I am sending reply0\n";
                     MPI_Send(&data->lamport_clock, 1, MPI_INT, sender, REP, MPI_COMM_WORLD);
@@ -244,6 +249,7 @@ void reciever_func(my_data *data)
 
             else if (request_time == -1) // I am not even requesting, I will reply
             {
+                data->lamport_clock += 1;
                 std::cout << data->pid << " ";
                 std::cout << "I recieved request from " << sender << ", I am sending reply2\n";
                 MPI_Send(&data->lamport_clock, 1, MPI_INT, sender, REP, MPI_COMM_WORLD);

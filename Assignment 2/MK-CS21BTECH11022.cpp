@@ -61,6 +61,11 @@ RECIEVES:
         - RELEASE
         - REQUEST
         - FAIL
+
+
+    Still should handle:
+    Fail set clear? done
+    If haven't recieved all messages yet and recieved inquire
 */
 
 #include <iostream>
@@ -128,9 +133,15 @@ double Timer(float exp_time)
 /* Helper function to insert an element in the queue */
 vector<pair<int, int>> insert_queue(vector<pair<int, int>> &queue, int senderId, int time_of_request)
 {
+    std::cout << "Queue before queue: ";
+    for (auto i : queue)
+    {
+        std::cout << "(" << i.first << "," << i.second << ")";
+    }
+    std::cout << "\n";
+
     // in pair: {senderId, timeOfRequest}
     auto it = queue.begin();
-
     while (it->second < time_of_request)
     {
         it++;
@@ -143,12 +154,26 @@ vector<pair<int, int>> insert_queue(vector<pair<int, int>> &queue, int senderId,
 
     queue.insert(it, {senderId, time_of_request});
 
+    std::cout << "Queue after queue: ";
+    for (auto i : queue)
+    {
+        std::cout << "(" << i.first << "," << i.second << ")";
+    }
+    std::cout << "\n";
+
     return queue;
 }
 
 /* Helper function to remove an element in the queue */
 vector<pair<int, int>> remove_queue(vector<pair<int, int>> &queue, int senderId)
 {
+    std::cout << "Queue before remove: ";
+    for (auto i : queue)
+    {
+        std::cout << "(" << i.first << "," << i.second << ")";
+    }
+    std::cout << "\n";
+
     auto it = queue.begin();
 
     while (it != queue.end())
@@ -160,20 +185,41 @@ vector<pair<int, int>> remove_queue(vector<pair<int, int>> &queue, int senderId)
     }
 
     queue.erase(it);
+
+    std::cout << "Queue after remove: ";
+    for (auto i : queue)
+    {
+        std::cout << "(" << i.first << "," << i.second << ")";
+    }
+    std::cout << "\n";
+
     return queue;
 }
 
 void criticalSection(my_data *data)
 {
+    std::cout << data->pid << " ";
+    std::cout << "Entered Critical Section\n";
     data->requests_sent += 1;
     inCS = true;
     sleep(Timer(data->beta));
     inCS = false;
     ready = false;
+    std::cout << " ";
+    std::cout << "Left Critical Section, sending release to quorum members\n";
 
+    data->lamport_clock += 1;
+    for(auto i : quorum)
+    {
+        MPI_Send(&data->lamport_clock, 1, MPI_INT, i, RELEASE, MPI_COMM_WORLD);
+    }
+
+    data->lamport_clock += 1;
     if (data->requests_sent == data->total_requests)
     {
         done = true;
+        std::cout << data->pid << " ";
+        std::cout << "I am done with all CS, sending done messages\n";
         for (auto i : quorum)
         {
             MPI_Send(&data->lamport_clock, 1, MPI_INT, i, DONE, MPI_COMM_WORLD);
@@ -187,8 +233,15 @@ void process_send(my_data *data)
 {
     while (data->requests_sent < data->total_requests)
     {
+        std::cout << data->pid << " ";
+        std::cout << "Not requesting state\n";
+        data->lamport_clock += 1;
         sleep(Timer(data->alpha));
 
+        std::cout << data->pid << " ";
+        std::cout << "Sending requests to my quorum members\n";
+
+        data->lamport_clock += 1;
         for (auto i : quorum)
         {
             MPI_Send(&data->lamport_clock, 1, MPI_INT, i, REQUEST, MPI_COMM_WORLD);
@@ -197,8 +250,15 @@ void process_send(my_data *data)
         {
             unique_lock<mutex> lock(mtx);
             cv.wait(lock, []
-                     { return ready; });
+                    { return ready; });
+            std::cout << data->pid << " ";
+            std::cout << "Got notfied that I can enter the critical section\n";
             criticalSection(data);
+        }
+
+        for (auto i : quorum)
+        {
+            grantSet.insert(i);
         }
     }
 }
@@ -222,6 +282,8 @@ void process_recv(my_data *data)
 
         if (tag == REPLY)
         {
+            std::cout << data->pid << " ";
+            std::cout << "Recieved REPLY from " << senderId << "\n";
             grantSet.erase(senderId);
             if (failSet.find(senderId) != failSet.end())
             {
@@ -230,7 +292,8 @@ void process_recv(my_data *data)
 
             if (grantSet.empty() == true)
             {
-                // Notify performer to enter CS, and also, ask to replenish the grant set
+                std::cout << data->pid << " ";
+                std::cout << "Notifying the performer thread to enter CS and reset grant set\n";
                 {
                     lock_guard<mutex> lock(mtx);
                     ready = true;
@@ -241,25 +304,34 @@ void process_recv(my_data *data)
 
         else if (tag == FAIL)
         {
+            std::cout << data->pid << " ";
+            std::cout << "Received FAIL from " << senderId << "\n";
             grantSet.insert(senderId);
             failSet.insert(senderId);
         }
 
         else if (tag == INQUIRE)
         {
+            std::cout << data->pid << " ";
             if (failSet.empty() == false || yeildSet.empty() == false)
             {
+                data->lamport_clock += 1;
+                std::cout << "Sending YEILD because I have a fail\n";
                 MPI_Send(&data->lamport_clock, 1, MPI_INT, senderId, YEILD, MPI_COMM_WORLD);
                 grantSet.insert(senderId);
             }
 
             else if (grantSet.empty() == false)
             {
-                continue;
+                data->lamport_clock += 1;
+                std::cout << "Sending YEILD becuase I am not in CS\n";
+                MPI_Send(&data->lamport_clock, 1, MPI_INT, senderId, YEILD, MPI_COMM_WORLD);
+                grantSet.insert(senderId);
             }
 
             else if (inCS == true)
             {
+                std::cout << "Continuing my work because I am in CS\n";
                 continue;
             }
 
@@ -271,32 +343,50 @@ void process_recv(my_data *data)
 
         else if (tag == REQUEST)
         {
+            std::cout << data->pid << " ";
+            std::cout << "I recieved request from " << senderId << "\n";
             int request_time = recv_msg;
+
             if (last_time_stamp < request_time || (last_time_stamp == request_time && last_sent_pid < senderId))
             {
+                data->lamport_clock += 1;
+                std::cout << data->pid << " ";
+                std::cout << "I am sending fail to " << senderId << "\n";
                 MPI_Send(&data->lamport_clock, 1, MPI_INT, senderId, FAIL, MPI_COMM_WORLD);
                 queue = insert_queue(queue, senderId, request_time);
             }
 
             else if (last_time_stamp > request_time || (last_time_stamp == request_time && last_sent_pid > senderId))
             {
+                data->lamport_clock += 1;
+                std::cout << data->pid << " ";
+                std::cout << "I am sending Inquire to to " << last_sent_pid << "\n";
+
                 MPI_Send(&data->lamport_clock, 1, MPI_INT, last_sent_pid, INQUIRE, MPI_COMM_WORLD);
                 int sub_recv = 0;
                 MPI_Status substatus;
                 MPI_Recv(&sub_recv, 1, MPI_INT, last_sent_pid, MPI::ANY_TAG, MPI_COMM_WORLD, &substatus);
+                data->lamport_clock = max(data->lamport_clock, sub_recv);
+                data->lamport_clock += 1;
 
                 int subtag = substatus.MPI_TAG;
 
                 if (subtag == RELEASE)
                 {
+                    std::cout << data->pid << " ";
+                    std::cout << "I recieved release from " << last_sent_pid << " sending reply to " << senderId << "\n";
                     queue = remove_queue(queue, last_sent_pid);
                     queue = insert_queue(queue, senderId, request_time);
+                    data->lamport_clock += 1;
                     MPI_Send(&data->lamport_clock, 1, MPI_INT, senderId, REPLY, MPI_COMM_WORLD);
                 }
 
                 else if (subtag == YEILD)
                 {
+                    std::cout << data->pid << " ";
+                    std::cout << "I recieved yeild from " << last_sent_pid << " sending reply to " << senderId << "\n";
                     queue = insert_queue(queue, senderId, request_time);
+                    data->lamport_clock += 1;
                     MPI_Send(&data->lamport_clock, 1, MPI_INT, senderId, REPLY, MPI_COMM_WORLD);
                 }
 
@@ -314,16 +404,26 @@ void process_recv(my_data *data)
 
         else if (tag == RELEASE)
         {
+
             queue = remove_queue(queue, senderId);
             int new_dest = queue[0].first;
+
+            std::cout << data->pid << " ";
+            std::cout << "I recieved release from " << senderId << " sending reply to " << new_dest << "\n";
+
+            data->lamport_clock += 1;            
             MPI_Send(&data->lamport_clock, 1, MPI_INT, new_dest, REPLY, MPI_COMM_WORLD);
         }
 
         else if (tag == DONE)
         {
+            std::cout << data->pid << " ";
+            std::cout << "I recieved done from " << senderId << "\n";
             done_recv++;
-            if (done_recv == data->size - 1)
+            if (done_recv == quorum.size())
             {
+                std::cout << data->pid << " ";
+                std::cout << "Recieved all dones\n";
                 break;
             }
         }
@@ -375,6 +475,13 @@ int main(int argc, char *argv[])
     data->requests_sent = 0;
     data->total_requests = k;
     data->size = size;
+
+    std::cout << data->pid << " ";
+    for (auto i : quorum)
+    {
+        std::cout << i << " ";
+    }
+    std::cout << "\n";
 
     std::thread performer;
     std::thread listener;
