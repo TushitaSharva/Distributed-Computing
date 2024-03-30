@@ -11,65 +11,50 @@
     - grantSet: a set which contains the quorum members who sent grant message
     - yeildSet: a set which contains the quorum members whom process sent yeild message
 
-Sends:
-    REQUEST:
-    Send requests to all elements in the reqSet
+    Process perform:
+    - Does it's execution --> in neutral state
+    - Sends REQUEST for CS, waits for reply (notified by the receiver thread)
+    - When all replies arrive, enter CS. After finish, send RELEASE to all quorums, reset grantSet
 
-    INQUIRE:
-    On recieving lower time stamp request, it will send inquire message to the process(es) it sent GRANT
-
-    YEILD:
-    If I have any elements in my failed set or yeild set and fail+yeild+grant = all quorum members, yeild
-    Else, wait for the last quorum member's message
-
-    GRANT:
-    If a process id is top in it's priority queue, it will send grant message to that process
-
+    Process receive:
     FAIL:
-    If a request is made, and it's time stamp is more that the root of the priority queue, then send a fail message
-
-    RELEASE:
-    Sends release message to all members in the quorum, once done executing the CS
-
-
-RECIEVES:
-    REQUEST:
-    Send grant if top of the timestamp is top of the priority queue
-    If not, SEND a FAIL message
-
-    GRANT:
-    Put in grant set, and enter CS if grant set has all members in the quorum
-
-    FAIL:
-    Put is fail set
-
-    YEILD:
-    Grant permission to the lower timestamp process
-
-    RELEASE:
-    Send grant to the root of priority queue
-
+    - Put this in fail set, make sure that it waits for the sender's grant
     INQUIRE:
-    Send YEILD if condition for yeild is satisfied
-    Else, just keep aside, and the process will eventually send release message to the quorum members
+    - If there is a fail: Send yeild, make sure that this waits for sender's grant again
+    - If not recieved grants from all: Send Yeild, make sure this waits fro sender's grant again
+    - If in CS: continue; (Will automatically send release upon finishing CS)
+    REPLY:
+    - Modify grantSet that the sender sent it's grant
+    - If replies from all quorum members recieved, notify performer to enter CS
+    REQUEST:
+    - Sender's request time is smaller than time root of pq / lesser pid, equal time: Send INQUIRE.
+        Wait for INQUIRE's reply.
+        If reply is RELEASE:
+        - remove the proc which sent release
+        - add the proc which sent the REQUEST
+        - send reply to the requesting proc
+        If reply is YEILD:
+        - add the proc which sent request
+        - no need to remove the proc which sent yeild
+        - send reply to the requesting proc
+    YEILD:
+    - send reply to the root of pq
+    RELEASE:
+    - remove the previous proc from the priority queue (pop)
+    - send REPLY to top of pq
+    DONE:
+    - done++
+    - if done == quorum.size(), break from the while loop of reciever, will return
 
-    RECIEVE:
-    Can recieve
-        - INQUIRE
-        - YEILD
-        - GRANT
-        - RELEASE
-        - REQUEST
-        - FAIL
-
-
-    Still should handle:
-    Fail set clear? done
-    If haven't recieved all messages yet and recieved inquire
+    CS:
+    - each time enter, request++;
+    if total requests reached, send done to all of it's quorum members.
+  
 */
 
 #include <iostream>
 #include <set>
+#include <queue>
 #include <utility>
 #include <random>
 #include <string.h>
@@ -130,72 +115,6 @@ double Timer(float exp_time)
     return distr(generate);
 }
 
-/* Helper function to insert an element in the queue */
-vector<pair<int, int>> insert_queue(vector<pair<int, int>> &queue, int senderId, int time_of_request)
-{
-    std::cout << "Queue before queue: ";
-    for (auto i : queue)
-    {
-        std::cout << "(" << i.first << "," << i.second << ")";
-    }
-    std::cout << "\n";
-
-    // in pair: {senderId, timeOfRequest}
-    auto it = queue.begin();
-    while (it->second < time_of_request)
-    {
-        it++;
-    }
-
-    if (it->first < senderId)
-    {
-        it++;
-    }
-
-    queue.insert(it, {senderId, time_of_request});
-
-    std::cout << "Queue after queue: ";
-    for (auto i : queue)
-    {
-        std::cout << "(" << i.first << "," << i.second << ")";
-    }
-    std::cout << "\n";
-
-    return queue;
-}
-
-/* Helper function to remove an element in the queue */
-vector<pair<int, int>> remove_queue(vector<pair<int, int>> &queue, int senderId)
-{
-    std::cout << "Queue before remove: ";
-    for (auto i : queue)
-    {
-        std::cout << "(" << i.first << "," << i.second << ")";
-    }
-    std::cout << "\n";
-
-    auto it = queue.begin();
-
-    while (it != queue.end())
-    {
-        if (it->first == senderId)
-        {
-            break;
-        }
-    }
-
-    queue.erase(it);
-
-    std::cout << "Queue after remove: ";
-    for (auto i : queue)
-    {
-        std::cout << "(" << i.first << "," << i.second << ")";
-    }
-    std::cout << "\n";
-
-    return queue;
-}
-
 void criticalSection(my_data *data)
 {
     std::cout << data->pid << " ";
@@ -209,7 +128,7 @@ void criticalSection(my_data *data)
     std::cout << "Left Critical Section, sending release to quorum members\n";
 
     data->lamport_clock += 1;
-    for(auto i : quorum)
+    for (auto i : quorum)
     {
         MPI_Send(&data->lamport_clock, 1, MPI_INT, i, RELEASE, MPI_COMM_WORLD);
     }
@@ -263,11 +182,31 @@ void process_send(my_data *data)
     }
 }
 
+class Compare
+{
+public:
+    bool operator()(pair<int, int> a, pair<int, int> b)
+    {
+        if (b.second < a.second)
+        {
+            if (a.second == b.second)
+            {
+                // If time_requested is equal, compare senderID
+                return a.first > b.first; // Smaller senderID first
+            }
+            // Otherwise, compare time_requested
+            return a.second > b.second; // Least time_requested first
+        }
+        std::cout << "Error came here\n";
+        return false;
+    }
+};
+
 void process_recv(my_data *data)
 {
     int last_sent_pid = 0;
     int last_time_stamp = 0;
-    vector<pair<int, int>> queue;
+    priority_queue<pair<int, int>, vector<pair<int, int>>, Compare> pq;
 
     while (true)
     {
@@ -353,7 +292,7 @@ void process_recv(my_data *data)
                 std::cout << data->pid << " ";
                 std::cout << "I am sending fail to " << senderId << "\n";
                 MPI_Send(&data->lamport_clock, 1, MPI_INT, senderId, FAIL, MPI_COMM_WORLD);
-                queue = insert_queue(queue, senderId, request_time);
+                pq.push({senderId, request_time});
             }
 
             else if (last_time_stamp > request_time || (last_time_stamp == request_time && last_sent_pid > senderId))
@@ -375,8 +314,8 @@ void process_recv(my_data *data)
                 {
                     std::cout << data->pid << " ";
                     std::cout << "I recieved release from " << last_sent_pid << " sending reply to " << senderId << "\n";
-                    queue = remove_queue(queue, last_sent_pid);
-                    queue = insert_queue(queue, senderId, request_time);
+                    pq.pop();
+                    pq.push({senderId, data->lamport_clock});
                     data->lamport_clock += 1;
                     MPI_Send(&data->lamport_clock, 1, MPI_INT, senderId, REPLY, MPI_COMM_WORLD);
                 }
@@ -385,7 +324,7 @@ void process_recv(my_data *data)
                 {
                     std::cout << data->pid << " ";
                     std::cout << "I recieved yeild from " << last_sent_pid << " sending reply to " << senderId << "\n";
-                    queue = insert_queue(queue, senderId, request_time);
+                    pq.push({senderId, request_time});
                     data->lamport_clock += 1;
                     MPI_Send(&data->lamport_clock, 1, MPI_INT, senderId, REPLY, MPI_COMM_WORLD);
                 }
@@ -405,13 +344,13 @@ void process_recv(my_data *data)
         else if (tag == RELEASE)
         {
 
-            queue = remove_queue(queue, senderId);
-            int new_dest = queue[0].first;
+            pq.pop();
+            int new_dest = pq.top().first;
 
             std::cout << data->pid << " ";
             std::cout << "I recieved release from " << senderId << " sending reply to " << new_dest << "\n";
 
-            data->lamport_clock += 1;            
+            data->lamport_clock += 1;
             MPI_Send(&data->lamport_clock, 1, MPI_INT, new_dest, REPLY, MPI_COMM_WORLD);
         }
 
@@ -466,6 +405,8 @@ int main(int argc, char *argv[])
         quorum.insert(root * my_row + i);
         quorum.insert(my_col + root * i);
     }
+
+    quorum.erase(pid);
 
     my_data *data = new my_data;
     data->alpha = alpha;
