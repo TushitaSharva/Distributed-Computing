@@ -106,7 +106,6 @@ set<int> yeildSet;
 condition_variable cv;
 mutex mtx;
 bool ready = false;
-atomic<bool> done = false;
 int done_recv = 0;
 
 // Helper Function: Generates a random number from an exponential distribution with a mean of 'exp_time'.
@@ -138,12 +137,14 @@ void criticalSection(my_data *data)
     data->lamport_clock += 1;
     if (data->requests_sent == data->total_requests)
     {
-        done = true;
         std::cout << data->pid << " ";
         std::cout << "I am done with all CS, sending done messages\n";
-        for (auto i : quorum)
+        for (int i = 0; i < data->size; i++)
         {
-            MPI_Send(&data->lamport_clock, 1, MPI_INT, i, DONE, MPI_COMM_WORLD);
+            if(i != data->pid)
+            {
+                MPI_Send(&data->lamport_clock, 1, MPI_INT, i, DONE, MPI_COMM_WORLD);
+            }
         }
     }
 
@@ -170,6 +171,8 @@ void process_send(my_data *data)
 
         {
             unique_lock<mutex> lock(mtx);
+            std::cout << data->pid << " ";
+            std::cout << "Entering busy waiting state\n";
             cv.wait(lock, []
                     { return ready; });
             std::cout << data->pid << " ";
@@ -272,7 +275,7 @@ void process_recv(my_data *data)
                     lock_guard<mutex> lock(mtx);
                     ready = true;
                 }
-                cv.notify_all();
+                cv.notify_one();
             }
         }
 
@@ -428,7 +431,9 @@ void process_recv(my_data *data)
             std::cout << data->pid << " ";
             std::cout << "I recieved done from " << senderId << "\n";
             done_recv++;
-            if (done_recv == quorum.size())
+            std::cout << data->pid << " ";
+            std::cout << "No. of dones recvd = " << done_recv << " quorum.size() = " << quorum.size() << "\n";
+            if (done_recv == data->size - 1)
             {
                 std::cout << data->pid << " ";
                 std::cout << "Recieved all dones\n";
@@ -477,6 +482,13 @@ int main(int argc, char *argv[])
 
     quorum.erase(pid);
 
+    std::cout << pid << " quorum: ";
+    for(auto i : quorum)
+    {
+        std::cout << i << " ";
+    }
+    std::cout << "\n";
+
     my_data *data = new my_data;
     data->alpha = alpha;
     data->beta = beta;
@@ -485,13 +497,6 @@ int main(int argc, char *argv[])
     data->requests_sent = 0;
     data->total_requests = k;
     data->size = size;
-
-    std::cout << data->pid << " ";
-    for (auto i : quorum)
-    {
-        std::cout << i << " ";
-    }
-    std::cout << "\n";
 
     std::thread performer;
     std::thread listener;
