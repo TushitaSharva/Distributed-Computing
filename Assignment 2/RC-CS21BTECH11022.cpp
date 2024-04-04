@@ -117,11 +117,7 @@ void criticalSection(my_data *data)
 {
     inCS = true;
     data->requests_sent++;
-    std::cout << data->pid << " ";
-    std::cout << "I entered CS " << data->requests_sent << " times\n";
     sleep(Timer(data->beta));
-    std::cout << data->pid << " ";
-    std::cout << "I left CS " << data->requests_sent << " times\n";
     inCS = false;
     ready = false;
 
@@ -140,19 +136,12 @@ void criticalSection(my_data *data)
 
     if (data->requests_sent == data->total_requests)
     {
-        std::cout << data->pid << " ";
-        std::cout << "Done is updated to " << done << "\n";
         data->lamport_clock += 1;
         for (int i = 0; i < data->size; i++)
         {
-            std::cout << data->pid << " ";
-            std::cout << "I am sending done to " << i << " process\n";
             MPI_Send(&data->lamport_clock, 1, MPI_INT, i, DONE, MPI_COMM_WORLD);
         }
     }
-
-    std::cout << data->pid << " ";
-    std::cout << "Leaving CS\n";
     return;
 }
 
@@ -162,24 +151,16 @@ void performer_func(my_data *data)
     {
         request_time = -1;
         data->lamport_clock += 1;
-        std::cout << data->pid << " entering sleep\n";
         sleep(Timer(data->alpha));
-        std::cout << data->pid << " exiting sleep\n";
-        // std::cout << "data->requests_sent is " << data->requests_sent << " data->total_requests is " << data->total_requests << "\n";
 
         if (grantWithMe == data->pid)
         {
-            std::cout << data->pid << " ";
-            std::cout << "Grant is with me, I am entering\n";
             criticalSection(data);
-            std::cout << data->pid << " ";
-            std::cout << "Came here after CS-1\n";
         }
 
         else if (grantWithMe != data->pid)
         {
             std::cout << data->pid << " ";
-            std::cout << "Grant is not with me, I am requesting\n";
             data->lamport_clock += 1;
             request_time = data->lamport_clock;
 
@@ -200,8 +181,6 @@ void performer_func(my_data *data)
                 unique_lock<mutex> lock(mtx1);
                 cv1.wait(lock, []
                          { return ready; });
-                std::cout << data->pid << " ";
-                // std::cout << "Notif: All replies are recieved\n";
                 criticalSection(data);
             }
         }
@@ -231,23 +210,17 @@ void reciever_func(my_data *data)
         {
             if (inCS == true) // If I am currently executing critical section, I will put the incoming request in defSet
             {
-                std::cout << data->pid << " ";
-                std::cout << "I recieved request from " << sender << ", I am putting in defSet1\n";
                 defSet.insert(sender);
             }
 
             else if (request_time != -1 && recv_msg > request_time) // I am not in CS, I am requesting, but the msg I recvd has greater time stamp than me, I will put it in defSet
             {
-                std::cout << data->pid << " ";
-                std::cout << "I recieved request from " << sender << ", I am putting in defSet2 " << recv_msg << " " << request_time << "\n";
                 defSet.insert(sender);
             }
 
             else if (request_time != -1 && recv_msg < request_time) // I am requesting, but the msg I recvd has smaller timestamp than me, I will reply
             {
                 data->lamport_clock += 1;
-                std::cout << data->pid << " ";
-                std::cout << "I recieved request from " << sender << ", I am sending reply1\n";
                 MPI_Send(&data->lamport_clock, 1, MPI_INT, sender, REP, MPI_COMM_WORLD);
                 repSet.insert(sender);
                 if (reqSet.find(sender) == reqSet.end())
@@ -263,16 +236,12 @@ void reciever_func(my_data *data)
             {
                 if (sender > data->pid)
                 {
-                    std::cout << data->pid << " ";
-                    std::cout << "I recieved request from " << sender << ", I am putting in defSet3\n";
                     defSet.insert(sender);
                 }
 
                 else
                 {
                     data->lamport_clock += 1;
-                    std::cout << data->pid << " ";
-                    std::cout << "I recieved request from " << sender << ", I am sending reply0\n";
                     MPI_Send(&data->lamport_clock, 1, MPI_INT, sender, REP, MPI_COMM_WORLD);
                     repSet.insert(sender);
                     if (reqSet.find(sender) == reqSet.end())
@@ -288,8 +257,6 @@ void reciever_func(my_data *data)
             else if (request_time == -1) // I am not even requesting, I will reply
             {
                 data->lamport_clock += 1;
-                std::cout << data->pid << " ";
-                std::cout << "I recieved request from " << sender << ", I am sending reply2\n";
                 MPI_Send(&data->lamport_clock, 1, MPI_INT, sender, REP, MPI_COMM_WORLD);
                 repSet.insert(sender);
                 grantWithMe = -1;
@@ -313,14 +280,9 @@ void reciever_func(my_data *data)
         else if (status.MPI_TAG == REP)
         {
             reqSet.erase(status.MPI_SOURCE); // When I recieve a reply, I will remove from the reqSet, impyling my request has been catered with their reply
-            std::cout << data->pid << " ";
-            std::cout << "I recieved reply from " << sender << "\n";
 
             if (reqSet.empty() == true) // If everyone I requested got a reply, ready to enter CS, but before that, I will modify the list I need to request before entering the CS next time.
             {
-                std::cout << data->pid << " ";
-                std::cout << "I recieved all replies!\n";
-
                 grantWithMe = data->pid;
 
                 {
@@ -334,15 +296,9 @@ void reciever_func(my_data *data)
         else if (status.MPI_TAG == DONE)
         {
             done++;
-            std::cout << data->pid << " ";
-            std::cout << "I recieved done from " << sender << "\n";
-            std::cout << data->pid << " ";
-            std::cout << "Done is updated to " << done << "\n";
 
             if (done == data->size)
             {
-                std::cout << data->pid << " ";
-                std::cout << "I recieved done message from all, I am exiting\n";
                 break;
             }
         }
@@ -395,8 +351,6 @@ int main(int argc, char *argv[])
     listener.join();
     performer.join();
 
-    std::cout << data->pid << " ";
-    std::cout << "Exited\n";
     MPI_Finalize();
     delete data;
     return 0;
