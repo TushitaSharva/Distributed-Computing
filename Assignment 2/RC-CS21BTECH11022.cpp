@@ -53,7 +53,6 @@
 #include <atomic>
 #include <mutex>
 #include <thread>
-#define D 1
 #define REQ 1
 #define REP 2
 #define DONE 3
@@ -79,6 +78,7 @@ condition_variable cv1;
 mutex mtx1;
 bool ready = false;
 int done;
+mutex file_lock;
 std::atomic<bool> inCS(false);
 std::atomic<int> request_time(-1); // Stores the time of requesting
 std::atomic<int> grantWithMe(0);
@@ -89,6 +89,27 @@ double Timer(float exp_time)
     default_random_engine generate;
     exponential_distribution<double> distr(1.0 / exp_time);
     return distr(generate);
+}
+
+void print(string str)
+{
+    file_lock.lock();
+    int pid;
+    MPI_Comm_rank(MPI_COMM_WORLD, &pid);
+
+    time_t current = time(0);
+    struct tm *timeinfo = localtime(&current);
+    char buffer[80];
+    strftime(buffer, sizeof(buffer), "%H:%M:%S", timeinfo);
+    std::string timeString(buffer);
+
+    string filename = "proc" + to_string(pid) + ".log";
+    ofstream outfile(filename, ios::app);
+
+    outfile << "[" << timeString << "]"
+            << " Process " << pid << " " << str << "\n";
+    outfile.close();
+    file_lock.unlock();
 }
 
 /* Function to simulate critical section */
@@ -104,13 +125,18 @@ void criticalSection(my_data *data)
     inCS = false;
     ready = false;
 
-    data->lamport_clock += 1;
-    for (auto i : defSet)
+    if (defSet.empty() == false)
     {
-        MPI_Send(&data->lamport_clock, 1, MPI_INT, i, REP, MPI_COMM_WORLD);
-    }
+        grantWithMe = -1;
+        data->lamport_clock += 1;
+        for (auto i : defSet)
+        {
+            MPI_Send(&data->lamport_clock, 1, MPI_INT, i, REP, MPI_COMM_WORLD);
+            repSet.insert(i);
+        }
 
-    defSet.clear();
+        defSet.clear();
+    }
 
     if (data->requests_sent == data->total_requests)
     {
@@ -119,12 +145,9 @@ void criticalSection(my_data *data)
         data->lamport_clock += 1;
         for (int i = 0; i < data->size; i++)
         {
-            if (i != data->pid)
-            {
-                std::cout << data->pid << " ";
-                std::cout << "I am sending done to " << i << " process\n";
-                MPI_Send(&data->lamport_clock, 1, MPI_INT, i, DONE, MPI_COMM_WORLD);
-            }
+            std::cout << data->pid << " ";
+            std::cout << "I am sending done to " << i << " process\n";
+            MPI_Send(&data->lamport_clock, 1, MPI_INT, i, DONE, MPI_COMM_WORLD);
         }
     }
 
@@ -137,11 +160,12 @@ void performer_func(my_data *data)
 {
     while (data->requests_sent < data->total_requests)
     {
-
         request_time = -1;
         data->lamport_clock += 1;
+        std::cout << data->pid << " entering sleep\n";
         sleep(Timer(data->alpha));
-        request_time = data->lamport_clock;
+        std::cout << data->pid << " exiting sleep\n";
+        // std::cout << "data->requests_sent is " << data->requests_sent << " data->total_requests is " << data->total_requests << "\n";
 
         if (grantWithMe == data->pid)
         {
@@ -165,7 +189,7 @@ void performer_func(my_data *data)
             }
 
             repSet.clear();
-            
+
             data->lamport_clock += 1;
             for (auto i : reqSet)
             {
@@ -174,10 +198,10 @@ void performer_func(my_data *data)
 
             {
                 unique_lock<mutex> lock(mtx1);
-                std::cout << data->pid << " ";
-                std::cout << "Notif: All replies are recieved\n";
                 cv1.wait(lock, []
                          { return ready; });
+                std::cout << data->pid << " ";
+                // std::cout << "Notif: All replies are recieved\n";
                 criticalSection(data);
             }
         }
@@ -215,7 +239,7 @@ void reciever_func(my_data *data)
             else if (request_time != -1 && recv_msg > request_time) // I am not in CS, I am requesting, but the msg I recvd has greater time stamp than me, I will put it in defSet
             {
                 std::cout << data->pid << " ";
-                std::cout << "I recieved request from " << sender << ", I am putting in defSet2\n";
+                std::cout << "I recieved request from " << sender << ", I am putting in defSet2 " << recv_msg << " " << request_time << "\n";
                 defSet.insert(sender);
             }
 
@@ -225,6 +249,13 @@ void reciever_func(my_data *data)
                 std::cout << data->pid << " ";
                 std::cout << "I recieved request from " << sender << ", I am sending reply1\n";
                 MPI_Send(&data->lamport_clock, 1, MPI_INT, sender, REP, MPI_COMM_WORLD);
+                repSet.insert(sender);
+                if (reqSet.find(sender) == reqSet.end())
+                {
+                    repSet.erase(sender);
+                    MPI_Send(&data->lamport_clock, 1, MPI_INT, sender, REQ, MPI_COMM_WORLD);
+                    reqSet.insert(sender);
+                }
                 grantWithMe = -1;
             }
 
@@ -243,6 +274,13 @@ void reciever_func(my_data *data)
                     std::cout << data->pid << " ";
                     std::cout << "I recieved request from " << sender << ", I am sending reply0\n";
                     MPI_Send(&data->lamport_clock, 1, MPI_INT, sender, REP, MPI_COMM_WORLD);
+                    repSet.insert(sender);
+                    if (reqSet.find(sender) == reqSet.end())
+                    {
+                        repSet.erase(sender);
+                        MPI_Send(&data->lamport_clock, 1, MPI_INT, sender, REQ, MPI_COMM_WORLD);
+                        reqSet.insert(sender);
+                    }
                     grantWithMe = -1;
                 }
             }
@@ -253,6 +291,7 @@ void reciever_func(my_data *data)
                 std::cout << data->pid << " ";
                 std::cout << "I recieved request from " << sender << ", I am sending reply2\n";
                 MPI_Send(&data->lamport_clock, 1, MPI_INT, sender, REP, MPI_COMM_WORLD);
+                repSet.insert(sender);
                 grantWithMe = -1;
             }
 
@@ -281,12 +320,6 @@ void reciever_func(my_data *data)
             {
                 std::cout << data->pid << " ";
                 std::cout << "I recieved all replies!\n";
-                for (auto i : repSet)
-                {
-                    reqSet.insert(i);
-                }
-
-                repSet.clear();
 
                 grantWithMe = data->pid;
 
@@ -305,13 +338,13 @@ void reciever_func(my_data *data)
             std::cout << "I recieved done from " << sender << "\n";
             std::cout << data->pid << " ";
             std::cout << "Done is updated to " << done << "\n";
-        }
 
-        if (done == data->size - 1)
-        {
-            std::cout << data->pid << " ";
-            std::cout << "I recieved done message from all, I am exiting\n";
-            break;
+            if (done == data->size)
+            {
+                std::cout << data->pid << " ";
+                std::cout << "I recieved done message from all, I am exiting\n";
+                break;
+            }
         }
     }
 
