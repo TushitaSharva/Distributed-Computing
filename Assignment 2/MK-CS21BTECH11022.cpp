@@ -146,8 +146,6 @@ void criticalSection(my_data *data)
     sleep(Timer(data->beta));
     inCS = false;
     ready = false;
-    std::cout << " ";
-    std::cout << "Left Critical Section, sending release to quorum members\n";
 
     data->lamport_clock += 1;
     for (auto i : quorum)
