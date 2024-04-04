@@ -105,8 +105,31 @@ set<int> failSet;
 set<int> yeildSet;
 condition_variable cv;
 mutex mtx;
+mutex file_lock;
 bool ready = false;
 int done_recv = 0;
+
+/* Helper function to print */
+void print(string str)
+{
+    file_lock.lock();
+    int pid;
+    MPI_Comm_rank(MPI_COMM_WORLD, &pid);
+
+    time_t current = time(0);
+    struct tm *timeinfo = localtime(&current);
+    char buffer[80];
+    strftime(buffer, sizeof(buffer), "%H:%M:%S", timeinfo);
+    std::string timeString(buffer);
+
+    string filename = "proc" + to_string(pid) + ".log";
+    ofstream outfile(filename, ios::app);
+
+    outfile << "[" << timeString << "]"
+            << " Process " << pid << " " << str << "\n";
+    outfile.close();
+    file_lock.unlock();
+}
 
 // Helper Function: Generates a random number from an exponential distribution with a mean of 'exp_time'.
 double Timer(float exp_time)
