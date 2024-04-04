@@ -141,8 +141,6 @@ double Timer(float exp_time)
 
 void criticalSection(my_data *data)
 {
-    std::cout << data->pid << " ";
-    std::cout << "Entered Critical Section\n";
     data->requests_sent += 1;
     inCS = true;
     sleep(Timer(data->beta));
@@ -160,8 +158,6 @@ void criticalSection(my_data *data)
     data->lamport_clock += 1;
     if (data->requests_sent == data->total_requests)
     {
-        std::cout << data->pid << " ";
-        std::cout << "I am done with all CS, sending done messages\n";
         for (int i = 0; i < data->size; i++)
         {
             if(i != data->pid)
@@ -178,13 +174,8 @@ void process_send(my_data *data)
 {
     while (data->requests_sent < data->total_requests)
     {
-        std::cout << data->pid << " ";
-        std::cout << "Not requesting state\n";
         data->lamport_clock += 1;
         sleep(Timer(data->alpha));
-
-        std::cout << data->pid << " ";
-        std::cout << "Sending requests to my quorum members\n";
 
         data->lamport_clock += 1;
         for (auto i : quorum)
@@ -194,12 +185,8 @@ void process_send(my_data *data)
 
         {
             unique_lock<mutex> lock(mtx);
-            std::cout << data->pid << " ";
-            std::cout << "Entering busy waiting state\n";
             cv.wait(lock, []
                     { return ready; });
-            std::cout << data->pid << " ";
-            std::cout << "Got notfied that I can enter the critical section\n";
             criticalSection(data);
         }
 
@@ -274,16 +261,9 @@ void process_recv(my_data *data)
         int tag = status.MPI_TAG;
         int senderId = status.MPI_SOURCE;
 
-        std::cout << data->pid << " ";
-        if (pq.empty() != true)
-        {
-            std::cout << "Queue's top: (" << pq.top().first << "," << pq.top().second << ")\n";
-        }
 
         if (tag == REPLY)
         {
-            std::cout << data->pid << " ";
-            std::cout << "Recieved REPLY from " << senderId << "\n";
             grantSet.erase(senderId);
             if (failSet.find(senderId) != failSet.end())
             {
@@ -292,8 +272,6 @@ void process_recv(my_data *data)
 
             if (grantSet.empty() == true)
             {
-                std::cout << data->pid << " ";
-                std::cout << "Notifying the performer thread to enter CS and reset grant set\n";
                 {
                     lock_guard<mutex> lock(mtx);
                     ready = true;
@@ -304,19 +282,15 @@ void process_recv(my_data *data)
 
         else if (tag == FAIL)
         {
-            std::cout << data->pid << " ";
-            std::cout << "Received FAIL from " << senderId << "\n";
             grantSet.insert(senderId);
             failSet.insert(senderId);
         }
 
         else if (tag == INQUIRE)
         {
-            std::cout << data->pid << " ";
             if (failSet.empty() == false || yeildSet.empty() == false)
             {
                 data->lamport_clock += 1;
-                std::cout << "Sending YEILD because I have a fail\n";
                 MPI_Send(&data->lamport_clock, 1, MPI_INT, senderId, YEILD, MPI_COMM_WORLD);
                 grantSet.insert(senderId);
             }
@@ -324,14 +298,12 @@ void process_recv(my_data *data)
             else if (grantSet.empty() == false)
             {
                 data->lamport_clock += 1;
-                std::cout << "Sending YEILD becuase I am not in CS\n";
                 MPI_Send(&data->lamport_clock, 1, MPI_INT, senderId, YEILD, MPI_COMM_WORLD);
                 grantSet.insert(senderId);
             }
 
             else if (inCS == true)
             {
-                std::cout << "Continuing my work because I am in CS\n";
                 continue;
             }
 
@@ -343,43 +315,25 @@ void process_recv(my_data *data)
 
         else if (tag == REQUEST)
         {
-            std::cout << data->pid << " ";
-            std::cout << "I recieved request from " << senderId << "\n";
             int request_time = recv_msg;
 
             if(pq.empty() == true)
             {
                 data->lamport_clock += 1;
-                std::cout << data->pid << " ";
-                std::cout << "I am sending reply to " << senderId << "\n";
                 MPI_Send(&data->lamport_clock, 1, MPI_INT, senderId, REPLY, MPI_COMM_WORLD);
                 pq.push({senderId, request_time});
-                std::cout << data->pid << " ";
-                if (pq.empty() != true)
-                {
-                    std::cout << "Queue's top: (" << pq.top().first << "," << pq.top().second << ")\n";
-                }
             }
 
             else if (last_time_stamp < request_time || (last_time_stamp == request_time && last_sent_pid < senderId))
             {
                 data->lamport_clock += 1;
-                std::cout << data->pid << " ";
-                std::cout << "I am sending fail to " << senderId << "\n";
                 MPI_Send(&data->lamport_clock, 1, MPI_INT, senderId, FAIL, MPI_COMM_WORLD);
                 pq.push({senderId, request_time});
-                std::cout << data->pid << " ";
-                if (pq.empty() != true)
-                {
-                    std::cout << "Queue's top: (" << pq.top().first << "," << pq.top().second << ")\n";
-                }
             }
 
             else if (last_time_stamp > request_time || (last_time_stamp == request_time && last_sent_pid > senderId))
             {
                 data->lamport_clock += 1;
-                std::cout << data->pid << " ";
-                std::cout << "I am sending Inquire to to " << last_sent_pid << "\n";
 
                 MPI_Send(&data->lamport_clock, 1, MPI_INT, last_sent_pid, INQUIRE, MPI_COMM_WORLD);
                 int sub_recv = 0;
@@ -392,29 +346,15 @@ void process_recv(my_data *data)
 
                 if (subtag == RELEASE)
                 {
-                    std::cout << data->pid << " ";
-                    std::cout << "I recieved release from " << last_sent_pid << " sending reply to " << senderId << "\n";
                     pq.pop();
                     pq.push({senderId, data->lamport_clock});
-                    std::cout << data->pid << " ";
-                    if (pq.empty() != true)
-                    {
-                        std::cout << "Queue's top: (" << pq.top().first << "," << pq.top().second << ")\n";
-                    }
                     data->lamport_clock += 1;
                     MPI_Send(&data->lamport_clock, 1, MPI_INT, senderId, REPLY, MPI_COMM_WORLD);
                 }
 
                 else if (subtag == YEILD)
                 {
-                    std::cout << data->pid << " ";
-                    std::cout << "I recieved yeild from " << last_sent_pid << " sending reply to " << senderId << "\n";
                     pq.push({senderId, request_time});
-                    std::cout << data->pid << " ";
-                    if (pq.empty() != true)
-                    {
-                        std::cout << "Queue's top: (" << pq.top().first << "," << pq.top().second << ")\n";
-                    }
                     data->lamport_clock += 1;
                     MPI_Send(&data->lamport_clock, 1, MPI_INT, senderId, REPLY, MPI_COMM_WORLD);
                 }
@@ -436,14 +376,6 @@ void process_recv(my_data *data)
 
             pq.pop();
             int new_dest = pq.top().first;
-            std::cout << data->pid << " ";
-            if (pq.empty() != true)
-            {
-                std::cout << "Queue's top: (" << pq.top().first << "," << pq.top().second << ")\n";
-            }
-
-            std::cout << data->pid << " ";
-            std::cout << "I recieved release from " << senderId << " sending reply to " << new_dest << "\n";
 
             data->lamport_clock += 1;
             MPI_Send(&data->lamport_clock, 1, MPI_INT, new_dest, REPLY, MPI_COMM_WORLD);
@@ -451,15 +383,9 @@ void process_recv(my_data *data)
 
         else if (tag == DONE)
         {
-            std::cout << data->pid << " ";
-            std::cout << "I recieved done from " << senderId << "\n";
             done_recv++;
-            std::cout << data->pid << " ";
-            std::cout << "No. of dones recvd = " << done_recv << " quorum.size() = " << quorum.size() << "\n";
             if (done_recv == data->size - 1)
             {
-                std::cout << data->pid << " ";
-                std::cout << "Recieved all dones\n";
                 break;
             }
         }
@@ -504,13 +430,6 @@ int main(int argc, char *argv[])
     }
 
     quorum.erase(pid);
-
-    std::cout << pid << " quorum: ";
-    for(auto i : quorum)
-    {
-        std::cout << i << " ";
-    }
-    std::cout << "\n";
 
     my_data *data = new my_data;
     data->alpha = alpha;
