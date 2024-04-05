@@ -179,6 +179,8 @@ void performer_func(my_data *data)
                 MPI_Send(&data->lamport_clock, 1, MPI_INT, i, REQ, MPI_COMM_WORLD);
                 strr += to_string(i) + " ";
             }
+            strr += "at ";
+            strr += to_string(data->lamport_clock);
             print(strr);
 
             {
@@ -236,8 +238,9 @@ void reciever_func(my_data *data)
                 repSet.insert(sender);
                 if (reqSet.find(sender) == reqSet.end())
                 {
-                    print("Sending REQUEST to " + to_string(sender) + " " + to_string(recv_msg) + " " + to_string(request_time)  + " (1)");
+                    print("Sending REQUEST to " + to_string(sender) + " " + to_string(recv_msg) + " " + to_string(request_time) + " (1)");
                     repSet.erase(sender);
+                    data->lamport_clock.fetch_add(1);
                     MPI_Send(&data->lamport_clock, 1, MPI_INT, sender, REQ, MPI_COMM_WORLD);
                     reqSet.insert(sender);
                 }
@@ -262,6 +265,7 @@ void reciever_func(my_data *data)
                     {
                         print("Sending REPLY to " + to_string(sender) + " " + to_string(recv_msg) + " " + to_string(request_time)  + " (2)");
                         repSet.erase(sender);
+                        data->lamport_clock.fetch_add(1);
                         MPI_Send(&data->lamport_clock, 1, MPI_INT, sender, REQ, MPI_COMM_WORLD);
                         reqSet.insert(sender);
                     }
