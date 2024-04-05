@@ -106,7 +106,6 @@ set<int> yeildSet;
 condition_variable cv;
 mutex mtx;
 mutex file_lock;
-bool ready = false;
 int done_recv = 0;
 
 /* Helper function to print */
@@ -122,11 +121,10 @@ void print(string str)
     strftime(buffer, sizeof(buffer), "%H:%M:%S", timeinfo);
     std::string timeString(buffer);
 
-    string filename = "proc" + to_string(pid) + ".log";
+    string filename = "proc_MK" + to_string(pid) + ".log";
     ofstream outfile(filename, ios::app);
 
-    outfile << "[" << timeString << "]"
-            << " Process " << pid << " " << str << "\n";
+    outfile << "[" << timeString << "]" << " Process " << pid << " " << str << "\n";
     outfile.close();
     file_lock.unlock();
 }
@@ -141,11 +139,11 @@ double Timer(float exp_time)
 
 void criticalSection(my_data *data)
 {
+    print("Entered CS function");
     data->requests_sent += 1;
     inCS = true;
     sleep(Timer(data->beta));
     inCS = false;
-    ready = false;
 
     data->lamport_clock += 1;
     for (auto i : quorum)
@@ -156,12 +154,10 @@ void criticalSection(my_data *data)
     data->lamport_clock += 1;
     if (data->requests_sent == data->total_requests)
     {
+        print("Sending done messages");
         for (int i = 0; i < data->size; i++)
         {
-            if(i != data->pid)
-            {
-                MPI_Send(&data->lamport_clock, 1, MPI_INT, i, DONE, MPI_COMM_WORLD);
-            }
+            MPI_Send(&data->lamport_clock, 1, MPI_INT, i, DONE, MPI_COMM_WORLD);
         }
     }
 
@@ -172,8 +168,10 @@ void process_send(my_data *data)
 {
     while (data->requests_sent < data->total_requests)
     {
+        print("Started internal computations");
         data->lamport_clock += 1;
         sleep(Timer(data->alpha));
+        print("Finished internal computations, sending requests");
 
         data->lamport_clock += 1;
         for (auto i : quorum)
@@ -181,12 +179,12 @@ void process_send(my_data *data)
             MPI_Send(&data->lamport_clock, 1, MPI_INT, i, REQUEST, MPI_COMM_WORLD);
         }
 
+        while (inCS == false)
         {
-            unique_lock<mutex> lock(mtx);
-            cv.wait(lock, []
-                    { return ready; });
-            criticalSection(data);
+            continue;
         }
+
+        criticalSection(data);
 
         for (auto i : quorum)
         {
@@ -259,9 +257,9 @@ void process_recv(my_data *data)
         int tag = status.MPI_TAG;
         int senderId = status.MPI_SOURCE;
 
-
         if (tag == REPLY)
         {
+            print("Recieved REPLY message from " + to_string(senderId));
             grantSet.erase(senderId);
             if (failSet.find(senderId) != failSet.end())
             {
@@ -270,30 +268,21 @@ void process_recv(my_data *data)
 
             if (grantSet.empty() == true)
             {
-                {
-                    lock_guard<mutex> lock(mtx);
-                    ready = true;
-                }
-                cv.notify_one();
+                inCS = true;
             }
         }
 
         else if (tag == FAIL)
         {
+            print("Recieved FAIL message from " + to_string(senderId));
             grantSet.insert(senderId);
             failSet.insert(senderId);
         }
 
         else if (tag == INQUIRE)
         {
-            if (failSet.empty() == false || yeildSet.empty() == false)
-            {
-                data->lamport_clock += 1;
-                MPI_Send(&data->lamport_clock, 1, MPI_INT, senderId, YEILD, MPI_COMM_WORLD);
-                grantSet.insert(senderId);
-            }
-
-            else if (grantSet.empty() == false)
+            print("Recieved INQUIRE message from " + to_string(senderId));
+            if (inCS == false)
             {
                 data->lamport_clock += 1;
                 MPI_Send(&data->lamport_clock, 1, MPI_INT, senderId, YEILD, MPI_COMM_WORLD);
@@ -313,9 +302,10 @@ void process_recv(my_data *data)
 
         else if (tag == REQUEST)
         {
+            print("Recieved REQUEST message from " + to_string(senderId));
             int request_time = recv_msg;
 
-            if(pq.empty() == true)
+            if (pq.empty() == true)
             {
                 data->lamport_clock += 1;
                 MPI_Send(&data->lamport_clock, 1, MPI_INT, senderId, REPLY, MPI_COMM_WORLD);
@@ -344,6 +334,7 @@ void process_recv(my_data *data)
 
                 if (subtag == RELEASE)
                 {
+                    print("Recieved RELEASE message from " + to_string(senderId));
                     pq.pop();
                     pq.push({senderId, data->lamport_clock});
                     data->lamport_clock += 1;
@@ -352,6 +343,7 @@ void process_recv(my_data *data)
 
                 else if (subtag == YEILD)
                 {
+                    print("Recieved YEILD message from " + to_string(senderId));
                     pq.push({senderId, request_time});
                     data->lamport_clock += 1;
                     MPI_Send(&data->lamport_clock, 1, MPI_INT, senderId, REPLY, MPI_COMM_WORLD);
@@ -371,7 +363,7 @@ void process_recv(my_data *data)
 
         else if (tag == RELEASE)
         {
-
+            print("Recieved RELEASE message from " + to_string(senderId));
             pq.pop();
             int new_dest = pq.top().first;
 
@@ -381,9 +373,11 @@ void process_recv(my_data *data)
 
         else if (tag == DONE)
         {
+            print("Recieved DONE message from " + to_string(senderId));
             done_recv++;
-            if (done_recv == data->size - 1)
+            if (done_recv == data->size)
             {
+                print("All Done");
                 break;
             }
         }

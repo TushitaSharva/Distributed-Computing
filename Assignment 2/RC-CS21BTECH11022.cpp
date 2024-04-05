@@ -62,7 +62,7 @@ class my_data
 {
 public:
     int pid;
-    int lamport_clock;
+    atomic<int> lamport_clock;
     int size;
     int total_requests;
     int requests_sent;
@@ -74,12 +74,9 @@ ifstream inputfile;
 set<int> reqSet;
 set<int> defSet;
 set<int> repSet;
-condition_variable cv1;
-mutex mtx1;
-bool ready = false;
+atomic<bool> inCS(false);
 int done;
 mutex file_lock;
-std::atomic<bool> inCS(false);
 std::atomic<int> request_time(-1); // Stores the time of requesting
 std::atomic<int> grantWithMe(0);
 
@@ -103,7 +100,7 @@ void print(string str)
     strftime(buffer, sizeof(buffer), "%H:%M:%S", timeinfo);
     std::string timeString(buffer);
 
-    string filename = "proc" + to_string(pid) + ".log";
+    string filename = "proc_RC" + to_string(pid) + ".log";
     ofstream outfile(filename, ios::app);
 
     outfile << "[" << timeString << "]"
@@ -115,16 +112,16 @@ void print(string str)
 /* Function to simulate critical section */
 void criticalSection(my_data *data)
 {
-    inCS = true;
+    print("Entered CS function");
     data->requests_sent++;
     sleep(Timer(data->beta));
     inCS = false;
-    ready = false;
 
     if (defSet.empty() == false)
     {
+        print("Sending replies to defset");
         grantWithMe = -1;
-        data->lamport_clock += 1;
+        data->lamport_clock.fetch_add(1);
         for (auto i : defSet)
         {
             MPI_Send(&data->lamport_clock, 1, MPI_INT, i, REP, MPI_COMM_WORLD);
@@ -136,11 +133,14 @@ void criticalSection(my_data *data)
 
     if (data->requests_sent == data->total_requests)
     {
-        data->lamport_clock += 1;
+        print("Sending done to all");
+        data->lamport_clock.fetch_add(1);
         for (int i = 0; i < data->size; i++)
         {
             MPI_Send(&data->lamport_clock, 1, MPI_INT, i, DONE, MPI_COMM_WORLD);
         }
+
+        request_time = -1;
     }
     return;
 }
@@ -149,20 +149,22 @@ void performer_func(my_data *data)
 {
     while (data->requests_sent < data->total_requests)
     {
+        print("Started internal computation");
         request_time = -1;
-        data->lamport_clock += 1;
+        data->lamport_clock.fetch_add(1);
         sleep(Timer(data->alpha));
+        print("Finished internal computation");
 
         if (grantWithMe == data->pid)
         {
+            inCS = true;
             criticalSection(data);
         }
 
         else if (grantWithMe != data->pid)
         {
-            std::cout << data->pid << " ";
-            data->lamport_clock += 1;
-            request_time = data->lamport_clock;
+            data->lamport_clock.fetch_add(1);
+            request_time = data->lamport_clock.load();
 
             for (auto i : repSet)
             {
@@ -170,17 +172,21 @@ void performer_func(my_data *data)
             }
 
             repSet.clear();
-
-            data->lamport_clock += 1;
+            string strr = "Sent requests to ";
+            data->lamport_clock.fetch_add(1);
             for (auto i : reqSet)
             {
                 MPI_Send(&data->lamport_clock, 1, MPI_INT, i, REQ, MPI_COMM_WORLD);
+                strr += to_string(i) + " ";
             }
+            print(strr);
 
             {
-                unique_lock<mutex> lock(mtx1);
-                cv1.wait(lock, []
-                         { return ready; });
+                while(inCS == false)
+                {
+                    continue;
+                }
+                print("Recieved all replies, going to critical section");
                 criticalSection(data);
             }
         }
@@ -201,30 +207,36 @@ void reciever_func(my_data *data)
         int recv_msg = 0;
         MPI_Status status;
         MPI_Recv(&recv_msg, 1, MPI_INT, MPI::ANY_SOURCE, MPI::ANY_TAG, MPI_COMM_WORLD, &status);
-        data->lamport_clock = max(data->lamport_clock, recv_msg);
-        data->lamport_clock += 1;
+        data->lamport_clock.store(max(data->lamport_clock.load(), recv_msg));
+        data->lamport_clock.fetch_add(1);
 
         int sender = status.MPI_SOURCE;
 
         if (status.MPI_TAG == REQ)
         {
+            print("Recieved REQUEST from " + to_string(sender));
+
             if (inCS == true) // If I am currently executing critical section, I will put the incoming request in defSet
             {
+                print("Kept " + to_string(sender) + " " + to_string(recv_msg) + " " + to_string(request_time)  + " in defSet (1)");
                 defSet.insert(sender);
             }
 
             else if (request_time != -1 && recv_msg > request_time) // I am not in CS, I am requesting, but the msg I recvd has greater time stamp than me, I will put it in defSet
             {
+                print("Kept " + to_string(sender) + " " + to_string(recv_msg) + " " + to_string(request_time)  + " in defSet (2)");
                 defSet.insert(sender);
             }
 
             else if (request_time != -1 && recv_msg < request_time) // I am requesting, but the msg I recvd has smaller timestamp than me, I will reply
             {
-                data->lamport_clock += 1;
+                print("Sending REPLY to " + to_string(sender) + " " + to_string(recv_msg) + " " + to_string(request_time) + " (1)");
+                data->lamport_clock.fetch_add(1);
                 MPI_Send(&data->lamport_clock, 1, MPI_INT, sender, REP, MPI_COMM_WORLD);
                 repSet.insert(sender);
                 if (reqSet.find(sender) == reqSet.end())
                 {
+                    print("Sending REQUEST to " + to_string(sender) + " " + to_string(recv_msg) + " " + to_string(request_time)  + " (1)");
                     repSet.erase(sender);
                     MPI_Send(&data->lamport_clock, 1, MPI_INT, sender, REQ, MPI_COMM_WORLD);
                     reqSet.insert(sender);
@@ -236,16 +248,19 @@ void reciever_func(my_data *data)
             {
                 if (sender > data->pid)
                 {
+                    print("Keeping " + to_string(sender) + " " + to_string(recv_msg) + " " + to_string(request_time)  + " in defSet (3)");
                     defSet.insert(sender);
                 }
 
                 else
                 {
-                    data->lamport_clock += 1;
+                    print("Sending REPLY to " + to_string(sender) + " " + to_string(recv_msg) + " " + to_string(request_time)  + " (2)");
+                    data->lamport_clock.fetch_add(1);
                     MPI_Send(&data->lamport_clock, 1, MPI_INT, sender, REP, MPI_COMM_WORLD);
                     repSet.insert(sender);
                     if (reqSet.find(sender) == reqSet.end())
                     {
+                        print("Sending REPLY to " + to_string(sender) + " " + to_string(recv_msg) + " " + to_string(request_time)  + " (2)");
                         repSet.erase(sender);
                         MPI_Send(&data->lamport_clock, 1, MPI_INT, sender, REQ, MPI_COMM_WORLD);
                         reqSet.insert(sender);
@@ -256,7 +271,8 @@ void reciever_func(my_data *data)
 
             else if (request_time == -1) // I am not even requesting, I will reply
             {
-                data->lamport_clock += 1;
+                print("Sending REPLY to " + to_string(sender) + " " + to_string(recv_msg) + " " + to_string(request_time)  + " (3)");
+                data->lamport_clock.fetch_add(1);
                 MPI_Send(&data->lamport_clock, 1, MPI_INT, sender, REP, MPI_COMM_WORLD);
                 repSet.insert(sender);
                 grantWithMe = -1;
@@ -279,26 +295,25 @@ void reciever_func(my_data *data)
 
         else if (status.MPI_TAG == REP)
         {
+            print("Recieved REPLY from " + to_string(sender));
             reqSet.erase(status.MPI_SOURCE); // When I recieve a reply, I will remove from the reqSet, impyling my request has been catered with their reply
 
             if (reqSet.empty() == true) // If everyone I requested got a reply, ready to enter CS, but before that, I will modify the list I need to request before entering the CS next time.
             {
                 grantWithMe = data->pid;
 
-                {
-                    lock_guard<mutex> lock(mtx1);
-                    ready = true;
-                }
-                cv1.notify_all();
+                inCS = true;
             }
         }
 
         else if (status.MPI_TAG == DONE)
         {
+            print("Recieved DONE from " + to_string(sender));
             done++;
 
             if (done == data->size)
             {
+                print("All Done");
                 break;
             }
         }
