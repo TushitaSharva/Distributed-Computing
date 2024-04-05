@@ -89,7 +89,7 @@ class my_data
 {
 public:
     int pid;
-    int lamport_clock;
+    atomic<int> lamport_clock;
     int size;
     int total_requests;
     int requests_sent;
@@ -145,13 +145,13 @@ void criticalSection(my_data *data)
     sleep(Timer(data->beta));
     inCS = false;
 
-    data->lamport_clock += 1;
+    data->lamport_clock.fetch_add(1);;
     for (auto i : quorum)
     {
         MPI_Send(&data->lamport_clock, 1, MPI_INT, i, RELEASE, MPI_COMM_WORLD);
     }
 
-    data->lamport_clock += 1;
+    data->lamport_clock.fetch_add(1);;
     if (data->requests_sent == data->total_requests)
     {
         print("Sending done messages");
@@ -169,11 +169,11 @@ void process_send(my_data *data)
     while (data->requests_sent < data->total_requests)
     {
         print("Started internal computations");
-        data->lamport_clock += 1;
+        data->lamport_clock.fetch_add(1);;
         sleep(Timer(data->alpha));
         print("Finished internal computations, sending requests");
 
-        data->lamport_clock += 1;
+        data->lamport_clock.fetch_add(1);;
         for (auto i : quorum)
         {
             MPI_Send(&data->lamport_clock, 1, MPI_INT, i, REQUEST, MPI_COMM_WORLD);
@@ -203,24 +203,24 @@ class Compare
 public:
     bool operator()(pair<int, int> a, pair<int, int> b)
     {
-        if (a.second < b.second)
+        if (a.second > b.second)
         {
             return true;
         }
 
-        else if (a.second > b.second)
+        else if (a.second < b.second)
         {
             return false;
         }
 
         else if (a.second == b.second)
         {
-            if (a.first < b.first)
+            if (a.first > b.first)
             {
                 return true;
             }
 
-            else if (a.first > b.first)
+            else if (a.first < b.first)
             {
                 return false;
             }
@@ -251,8 +251,8 @@ void process_recv(my_data *data)
         int recv_msg = 0;
         MPI_Status status;
         MPI_Recv(&recv_msg, 1, MPI_INT, MPI::ANY_SOURCE, MPI::ANY_TAG, MPI_COMM_WORLD, &status);
-        data->lamport_clock = max(data->lamport_clock, recv_msg);
-        data->lamport_clock += 1;
+        data->lamport_clock = max(data->lamport_clock.load(), recv_msg);
+        data->lamport_clock.fetch_add(1);;
 
         int tag = status.MPI_TAG;
         int senderId = status.MPI_SOURCE;
@@ -284,7 +284,7 @@ void process_recv(my_data *data)
             print("Recieved INQUIRE message from " + to_string(senderId));
             if (inCS == false)
             {
-                data->lamport_clock += 1;
+                data->lamport_clock.fetch_add(1);;
                 MPI_Send(&data->lamport_clock, 1, MPI_INT, senderId, YEILD, MPI_COMM_WORLD);
                 grantSet.insert(senderId);
             }
@@ -307,28 +307,28 @@ void process_recv(my_data *data)
 
             if (pq.empty() == true)
             {
-                data->lamport_clock += 1;
+                data->lamport_clock.fetch_add(1);;
                 MPI_Send(&data->lamport_clock, 1, MPI_INT, senderId, REPLY, MPI_COMM_WORLD);
                 pq.push({senderId, request_time});
             }
 
             else if (last_time_stamp < request_time || (last_time_stamp == request_time && last_sent_pid < senderId))
             {
-                data->lamport_clock += 1;
+                data->lamport_clock.fetch_add(1);;
                 MPI_Send(&data->lamport_clock, 1, MPI_INT, senderId, FAIL, MPI_COMM_WORLD);
                 pq.push({senderId, request_time});
             }
 
             else if (last_time_stamp > request_time || (last_time_stamp == request_time && last_sent_pid > senderId))
             {
-                data->lamport_clock += 1;
+                data->lamport_clock.fetch_add(1);;
 
                 MPI_Send(&data->lamport_clock, 1, MPI_INT, last_sent_pid, INQUIRE, MPI_COMM_WORLD);
                 int sub_recv = 0;
                 MPI_Status substatus;
                 MPI_Recv(&sub_recv, 1, MPI_INT, last_sent_pid, MPI::ANY_TAG, MPI_COMM_WORLD, &substatus);
-                data->lamport_clock = max(data->lamport_clock, sub_recv);
-                data->lamport_clock += 1;
+                data->lamport_clock = max(data->lamport_clock.load(), sub_recv);
+                data->lamport_clock.fetch_add(1);;
 
                 int subtag = substatus.MPI_TAG;
 
@@ -337,7 +337,7 @@ void process_recv(my_data *data)
                     print("Recieved RELEASE message from " + to_string(senderId));
                     pq.pop();
                     pq.push({senderId, data->lamport_clock});
-                    data->lamport_clock += 1;
+                    data->lamport_clock.fetch_add(1);;
                     MPI_Send(&data->lamport_clock, 1, MPI_INT, senderId, REPLY, MPI_COMM_WORLD);
                 }
 
@@ -345,7 +345,7 @@ void process_recv(my_data *data)
                 {
                     print("Recieved YEILD message from " + to_string(senderId));
                     pq.push({senderId, request_time});
-                    data->lamport_clock += 1;
+                    data->lamport_clock.fetch_add(1);;
                     MPI_Send(&data->lamport_clock, 1, MPI_INT, senderId, REPLY, MPI_COMM_WORLD);
                 }
 
@@ -367,7 +367,7 @@ void process_recv(my_data *data)
             pq.pop();
             int new_dest = pq.top().first;
 
-            data->lamport_clock += 1;
+            data->lamport_clock.fetch_add(1);;
             MPI_Send(&data->lamport_clock, 1, MPI_INT, new_dest, REPLY, MPI_COMM_WORLD);
         }
 
