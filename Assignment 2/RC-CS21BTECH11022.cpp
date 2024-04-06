@@ -46,7 +46,6 @@
 #include <sstream>
 #include <mpi.h>
 #include <mutex>
-#include <condition_variable>
 #include <time.h>
 #include <chrono>
 #include <fstream>
