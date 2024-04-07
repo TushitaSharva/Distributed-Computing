@@ -78,6 +78,7 @@ int done;
 mutex file_lock;
 std::atomic<int> request_time(-1); // Stores the time of requesting
 std::atomic<int> grantWithMe(0);
+atomic<int> message_complexity{0};
 
 /* Helper Function: Generates a random number from an exponential distribution with a mean of 'exp_time'. */
 double Timer(float exp_time)
@@ -183,7 +184,7 @@ void performer_func(my_data *data)
             print(strr);
 
             {
-                while(inCS == false)
+                while (inCS == false)
                 {
                     continue;
                 }
@@ -219,13 +220,13 @@ void reciever_func(my_data *data)
 
             if (inCS == true) // If I am currently executing critical section, I will put the incoming request in defSet
             {
-                print("Kept " + to_string(sender) + " " + to_string(recv_msg) + " " + to_string(request_time)  + " in defSet (1)");
+                print("Kept " + to_string(sender) + " " + to_string(recv_msg) + " " + to_string(request_time) + " in defSet (1)");
                 defSet.insert(sender);
             }
 
             else if (request_time != -1 && recv_msg > request_time) // I am not in CS, I am requesting, but the msg I recvd has greater time stamp than me, I will put it in defSet
             {
-                print("Kept " + to_string(sender) + " " + to_string(recv_msg) + " " + to_string(request_time)  + " in defSet (2)");
+                print("Kept " + to_string(sender) + " " + to_string(recv_msg) + " " + to_string(request_time) + " in defSet (2)");
                 defSet.insert(sender);
             }
 
@@ -250,19 +251,19 @@ void reciever_func(my_data *data)
             {
                 if (sender > data->pid)
                 {
-                    print("Keeping " + to_string(sender) + " " + to_string(recv_msg) + " " + to_string(request_time)  + " in defSet (3)");
+                    print("Keeping " + to_string(sender) + " " + to_string(recv_msg) + " " + to_string(request_time) + " in defSet (3)");
                     defSet.insert(sender);
                 }
 
                 else
                 {
-                    print("Sending REPLY to " + to_string(sender) + " " + to_string(recv_msg) + " " + to_string(request_time)  + " (2)");
+                    print("Sending REPLY to " + to_string(sender) + " " + to_string(recv_msg) + " " + to_string(request_time) + " (2)");
                     data->lamport_clock.fetch_add(1);
                     MPI_Send(&data->lamport_clock, 1, MPI_INT, sender, REP, MPI_COMM_WORLD);
                     repSet.insert(sender);
                     if (reqSet.find(sender) == reqSet.end())
                     {
-                        print("Sending REPLY to " + to_string(sender) + " " + to_string(recv_msg) + " " + to_string(request_time)  + " (2)");
+                        print("Sending REPLY to " + to_string(sender) + " " + to_string(recv_msg) + " " + to_string(request_time) + " (2)");
                         repSet.erase(sender);
                         data->lamport_clock.fetch_add(1);
                         MPI_Send(&data->lamport_clock, 1, MPI_INT, sender, REQ, MPI_COMM_WORLD);
@@ -274,7 +275,7 @@ void reciever_func(my_data *data)
 
             else if (request_time == -1) // I am not even requesting, I will reply
             {
-                print("Sending REPLY to " + to_string(sender) + " " + to_string(recv_msg) + " " + to_string(request_time)  + " (3)");
+                print("Sending REPLY to " + to_string(sender) + " " + to_string(recv_msg) + " " + to_string(request_time) + " (3)");
                 data->lamport_clock.fetch_add(1);
                 MPI_Send(&data->lamport_clock, 1, MPI_INT, sender, REP, MPI_COMM_WORLD);
                 repSet.insert(sender);
@@ -371,5 +372,10 @@ int main(int argc, char *argv[])
 
     MPI_Finalize();
     delete data;
+
+    ofstream message_complexity_file("messages_RC.txt", ios::app);
+    message_complexity_file << pid << ": " << message_complexity << " ";
+    message_complexity_file.close();
+
     return 0;
 }

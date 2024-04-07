@@ -4,3 +4,5 @@ RC-CS21BTECH11022.cpp
 inp-params.txt
 RC-CS21BTECH11022-ErrorCatch.cpp
 *.log
+*.ipynb
+*.txt

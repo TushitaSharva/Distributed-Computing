@@ -75,20 +75,21 @@
 #include <mutex>
 #include <thread>
 #include <mutex>
-#define REQUEST 1
-#define REPLY 2
-#define RELEASE 3
-#define FAIL 4
-#define INQUIRE 5
-#define YEILD 6
-#define DONE 0
+#include <condition_variable>
+#define DONE 1
+#define REQUEST 2
+#define REPLY 3
+#define RELEASE 4
+#define FAIL 5
+#define INQUIRE 6
+#define YEILD 7
 using namespace std;
+using namespace std::literals;
 
 class my_data
 {
 public:
     int pid;
-    atomic<int> lamport_clock;
     int size;
     int total_requests;
     int requests_sent;
@@ -130,13 +131,13 @@ public:
 
             else
             {
-                std::cout << "Error in comparator\n";
+                std::cout << "Error in comparator " << a.first << " " << b.first << "\n";
             }
         }
 
         else
         {
-            std::cout << "Error in comparator\n";
+            std::cout << "Error in comparator (2) " << a.second << " " << b.second << "\n";
         }
 
         return false;
@@ -144,7 +145,9 @@ public:
 };
 
 ifstream inputfile;
-atomic<bool> inCS(false);
+std::condition_variable cv;
+mutex lck;
+bool inCS;
 set<int> quorum;
 set<int> grantSet;
 set<int> failSet;
@@ -152,6 +155,8 @@ set<int> yeildSet;
 mutex mtx;
 mutex file_lock;
 int done_recv = 0;
+atomic<int> lamport_clock{0};
+atomic<int> message_complexity{0};
 
 /* Helper function to print */
 void print(string str)
@@ -175,20 +180,18 @@ void print(string str)
     file_lock.unlock();
 }
 
-
 /* Helper function to print queue */
 string printq(priority_queue<pair<int, int>, vector<pair<int, int>>, Compare> pq)
 {
     string str = "";
-    while(!pq.empty())
+    while (!pq.empty())
     {
-        str += "(" + to_string(pq.top().first) + ", " + to_string(pq.top().second) +")";
+        str += "(" + to_string(pq.top().first) + ", " + to_string(pq.top().second) + ")";
         pq.pop();
     }
 
     return str;
 }
-
 
 /* Helper Function: Generates a random number from an exponential distribution with a mean of 'exp_time'. */
 double Timer(float exp_time)
@@ -203,24 +206,23 @@ void criticalSection(my_data *data)
 {
     print("Entered CS function");
     data->requests_sent += 1;
-    inCS.store(true);
     sleep(Timer(data->beta));
-    inCS.store(false);
+    inCS = (false);
 
-    data->lamport_clock.fetch_add(1);
+    lamport_clock.fetch_add(1);
     for (auto i : quorum)
     {
         print("sending RELEASE message to " + to_string(i));
-        MPI_Send(&data->lamport_clock, 1, MPI_INT, i, RELEASE, MPI_COMM_WORLD);
+        MPI_Send(&lamport_clock, 1, MPI_INT, i, RELEASE, MPI_COMM_WORLD);
     }
 
-    data->lamport_clock.fetch_add(1);
+    lamport_clock.fetch_add(1);
     if (data->requests_sent == data->total_requests)
     {
         print("Sending done messages");
         for (int i = 0; i < data->size; i++)
         {
-            MPI_Send(&data->lamport_clock, 1, MPI_INT, i, DONE, MPI_COMM_WORLD);
+            MPI_Send(&lamport_clock, 1, MPI_INT, i, DONE, MPI_COMM_WORLD);
         }
     }
 
@@ -232,21 +234,22 @@ void process_send(my_data *data)
     while (data->requests_sent < data->total_requests)
     {
         print("Started internal computations");
-        data->lamport_clock.fetch_add(1);
+        lamport_clock.fetch_add(1);
         sleep(Timer(data->alpha));
         print("Finished internal computations, sending requests");
         string strr = "Sending request messages to ";
-        data->lamport_clock.fetch_add(1);
+        lamport_clock.fetch_add(1);
         for (auto i : quorum)
         {
             strr += to_string(i) + " ";
-            MPI_Send(&data->lamport_clock, 1, MPI_INT, i, REQUEST, MPI_COMM_WORLD);
+            MPI_Send(&lamport_clock, 1, MPI_INT, i, REQUEST, MPI_COMM_WORLD);
         }
         print(strr);
 
-        while (inCS == false)
         {
-            continue;
+            auto ul = std::unique_lock<std::mutex>(lck);
+            cv.wait(ul, []()
+                    { return inCS; });
         }
 
         criticalSection(data);
@@ -263,15 +266,18 @@ void process_recv(my_data *data)
     int last_sent_pid = 0;
     int last_time_stamp = 0;
     priority_queue<pair<int, int>, vector<pair<int, int>>, Compare> pq;
+    vector<pair<int, int>> buffer;
 
     while (true)
     {
         int recv_msg = 0;
         MPI_Status status;
         MPI_Recv(&recv_msg, 1, MPI_INT, MPI::ANY_SOURCE, MPI::ANY_TAG, MPI_COMM_WORLD, &status);
-        data->lamport_clock = max(data->lamport_clock.load(), recv_msg);
-        data->lamport_clock.fetch_add(1);
+        lamport_clock = max(lamport_clock.load(), recv_msg);
+        lamport_clock.fetch_add(1);
+        message_complexity.fetch_add(1);
 
+        int request_time = recv_msg;
         int tag = status.MPI_TAG;
         int senderId = status.MPI_SOURCE;
 
@@ -286,7 +292,11 @@ void process_recv(my_data *data)
 
             if (grantSet.empty() == true)
             {
-                inCS = true;
+                {
+                    auto ul = std::unique_lock<std::mutex>(lck);
+                    inCS = true;
+                }
+                cv.notify_one();
             }
         }
 
@@ -302,9 +312,9 @@ void process_recv(my_data *data)
             print("Recieved INQUIRE message from " + to_string(senderId));
             if (inCS == false)
             {
-                data->lamport_clock.fetch_add(1);
+                lamport_clock.fetch_add(1);
                 print("Sending YEILD message to " + to_string(senderId));
-                MPI_Send(&data->lamport_clock, 1, MPI_INT, senderId, YEILD, MPI_COMM_WORLD);
+                MPI_Send(&lamport_clock, 1, MPI_INT, senderId, YEILD, MPI_COMM_WORLD);
                 grantSet.insert(senderId);
             }
 
@@ -322,12 +332,11 @@ void process_recv(my_data *data)
         else if (tag == REQUEST)
         {
             print("Recieved REQUEST message from " + to_string(senderId));
-            int request_time = recv_msg;
 
             if (pq.empty() == true)
             {
-                data->lamport_clock.fetch_add(1);
-                MPI_Send(&data->lamport_clock, 1, MPI_INT, senderId, REPLY, MPI_COMM_WORLD);
+                lamport_clock.fetch_add(1);
+                MPI_Send(&lamport_clock, 1, MPI_INT, senderId, REPLY, MPI_COMM_WORLD);
                 last_sent_pid = senderId;
                 last_time_stamp = request_time;
                 pq.push({senderId, request_time});
@@ -336,24 +345,23 @@ void process_recv(my_data *data)
 
             else if (last_time_stamp < request_time || (last_time_stamp == request_time && last_sent_pid < senderId))
             {
-                data->lamport_clock.fetch_add(1);
-                MPI_Send(&data->lamport_clock, 1, MPI_INT, senderId, FAIL, MPI_COMM_WORLD);
+                lamport_clock.fetch_add(1);
+                MPI_Send(&lamport_clock, 1, MPI_INT, senderId, FAIL, MPI_COMM_WORLD);
                 pq.push({senderId, request_time});
                 print("Sent FAIL message to " + to_string(senderId) + " " + printq(pq));
             }
 
             else if (last_time_stamp > request_time || (last_time_stamp == request_time && last_sent_pid > senderId))
             {
-                data->lamport_clock.fetch_add(1);
-                MPI_Send(&data->lamport_clock, 1, MPI_INT, last_sent_pid, INQUIRE, MPI_COMM_WORLD);
-                int sub_recv = 0;
-                MPI_Status substatus;
+                lamport_clock.fetch_add(1);
+                MPI_Send(&lamport_clock, 1, MPI_INT, last_sent_pid, INQUIRE, MPI_COMM_WORLD);
                 print("Sending INQUIRE to " + to_string(senderId));
+                buffer.push_back({senderId, request_time});
             }
 
             else
             {
-                std::cout << "Error while processing REQUEST recieved tag " << request_time << " " << last_time_stamp << " " << last_sent_pid << " " << senderId <<"\n";
+                std::cout << "Error while processing REQUEST recieved tag " << request_time << " " << last_time_stamp << " " << last_sent_pid << " " << senderId << "\n";
             }
         }
 
@@ -362,28 +370,59 @@ void process_recv(my_data *data)
             print("Recieved RELEASE message from " + to_string(senderId));
             pq.pop();
 
+            for (int i = 0; i < buffer.size(); i++)
+            {
+                pq.push(buffer[i]);
+            }
+
             if (!pq.empty())
             {
                 int new_dest = pq.top().first;
-                data->lamport_clock.fetch_add(1);
+                lamport_clock.fetch_add(1);
+
+                for (int i = 0; i < buffer.size(); i++)
+                {
+                    if (buffer[i].first != new_dest)
+                    {
+                        MPI_Send(&lamport_clock, 1, MPI_INT, buffer[i].first, FAIL, MPI_COMM_WORLD);
+                    }
+                }
+                buffer.clear();
+
                 print("Sending REPLY message to " + to_string(new_dest) + " " + printq(pq));
-                MPI_Send(&data->lamport_clock, 1, MPI_INT, new_dest, REPLY, MPI_COMM_WORLD);
+                MPI_Send(&lamport_clock, 1, MPI_INT, new_dest, REPLY, MPI_COMM_WORLD);
 
                 last_sent_pid = senderId;
                 last_time_stamp = recv_msg;
             }
         }
 
-
         else if (tag == YEILD)
         {
-            data->lamport_clock.fetch_add(1);
-            print("Sending REPLY message to " + to_string(senderId) + " " + printq(pq));
-            MPI_Send(&data->lamport_clock, 1, MPI_INT, senderId, REPLY, MPI_COMM_WORLD);
+            lamport_clock.fetch_add(1);
+
+            for (int i = 0; i < buffer.size(); i++)
+            {
+                pq.push(buffer[i]);
+            }
+
+            int new_dest = pq.top().first;
+            for (int i = 0; i < buffer.size(); i++)
+            {
+                if (buffer[i].first != new_dest)
+                {
+                    MPI_Send(&lamport_clock, 1, MPI_INT, buffer[i].first, FAIL, MPI_COMM_WORLD);
+                }
+            }
+
+            buffer.clear();
+
+            print("Sending REPLY message to " + to_string(new_dest) + " " + printq(pq));
+            lamport_clock.fetch_add(1);
+            MPI_Send(&lamport_clock, 1, MPI_INT, new_dest, REPLY, MPI_COMM_WORLD);
 
             last_sent_pid = senderId;
             last_time_stamp = recv_msg;
-            pq.push({senderId, recv_msg});
         }
 
         else if (tag == DONE)
@@ -396,7 +435,7 @@ void process_recv(my_data *data)
                 break;
             }
         }
-        
+
         else
         {
             std::cout << "Error, process recieved " << tag << " tag from " << senderId;
@@ -441,7 +480,6 @@ int main(int argc, char *argv[])
     my_data *data = new my_data;
     data->alpha = alpha;
     data->beta = beta;
-    data->lamport_clock = 0;
     data->pid = pid;
     data->requests_sent = 0;
     data->total_requests = k;
@@ -458,5 +496,10 @@ int main(int argc, char *argv[])
 
     MPI_Finalize();
     delete (data);
+
+    ofstream message_complexity_file("messages_MK.txt", ios::app);
+    message_complexity_file << pid << ": " << message_complexity << " ";
+    message_complexity_file.close();
+
     return 0;
 }
