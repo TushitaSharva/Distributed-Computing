@@ -28,6 +28,15 @@
 #define INQUIRE 6
 #define YEILD 7
 
+#define RECVSET 8
+#define FAILSET 9
+#define PQ 10
+#define BUFFER 11
+
+#define ADD 12
+#define ERASE 13
+#define POP 14
+
 using namespace std;
 
 /* Global parameters */
@@ -40,11 +49,14 @@ atomic<int> lamport_clock;
 set<int> quorum;
 set<int> recvSet;
 set<int> failSet;
+priority_queue<pair<int, int>, vector<pair<int, int>>, greater<pair<int, int>>> pq;
+vector<pair<int, int>> buffer;
 
 std::condition_variable cv;
 mutex lck;
 bool inCS;
 mutex file_lock;
+mutex set_lock;
 
 /* Helper Function: Generates a random number from an exponential distribution with a mean of 'exp_time'. */
 double Timer(float exp_time)
@@ -76,11 +88,96 @@ void print(string str)
     file_lock.unlock();
 }
 
+void analyze_sets()
+{
+    int pid;
+    MPI_Comm_rank(MPI_COMM_WORLD, &pid);
+
+    ofstream outfile("analyze_" + to_string(pid) + ".log", ios::app);
+    outfile << "recvSet: (";
+    for (auto i : recvSet)
+    {
+        outfile << i << " ";
+    }
+    outfile << ") ";
+
+    outfile << "failSet: (";
+    for (auto i : failSet)
+    {
+        outfile << i << " ";
+    }
+    outfile << ") ";
+
+    outfile << "pq: ";
+    priority_queue<pair<int, int>, vector<pair<int, int>>, greater<pair<int, int>>> temp = pq;
+    while (!temp.empty())
+    {
+        outfile << "(" << temp.top().first << "," << temp.top().second << ") ";
+        temp.pop();
+    }
+
+    outfile << "\n";
+
+    outfile.close();
+    return;
+}
+
+void set_operations(int setName, int operation, int element)
+{
+    set_lock.lock();
+    if (setName == RECVSET)
+    {
+        if (operation == ADD)
+        {
+            recvSet.insert(element);
+        }
+        else if (operation == ERASE)
+        {
+            recvSet.erase(element);
+        }
+    }
+
+    else if (setName == FAILSET)
+    {
+        if (operation == ADD)
+        {
+            failSet.insert(element);
+        }
+        else if (operation == ERASE)
+        {
+            failSet.erase(element);
+        }
+    }
+
+    else if (setName == PQ)
+    {
+        if (operation == ADD)
+        {
+            pq.push(std::make_pair(element, lamport_clock.load()));
+        }
+        else if (operation == POP)
+        {
+            pq.pop();
+        }
+    }
+
+    else if (setName == BUFFER)
+    {
+        if (operation == ADD)
+        {
+            buffer.push_back(std::make_pair(element, lamport_clock.load()));
+        }
+    }
+    
+    set_lock.unlock();
+    return;
+}
+
 /* Critical section function */
 void critical_section()
 {
     print("entered critical section");
-    sleep(Timer(b));
+    this_thread::sleep_for(std::chrono::milliseconds(int(Timer(a))));
     print("exit from critical section");
     inCS = false;
     times_entered += 1;
@@ -93,6 +190,7 @@ void critical_section()
         MPI_Send(&timestamp, 1, MPI_INT, i, RELEASE, MPI_COMM_WORLD);
     }
     print("sending RELEASE to quorum members");
+    analyze_sets();
 
     return;
 }
@@ -100,11 +198,16 @@ void critical_section()
 /* Performer function: Sends, waits, and enters critical section on loop */
 void performer_func()
 {
-    while (times_entered < k)
+    while (true)
     {
+        if (times_entered == k)
+        {
+            break;
+        }
+
         // Performs internal computations
         print("performing internal computations");
-        sleep(Timer(b));
+        this_thread::sleep_for(std::chrono::milliseconds(int(Timer(a))));
         print("finished doing internal computations, sending requests");
 
         for (auto i : quorum)
@@ -115,6 +218,8 @@ void performer_func()
             // Sending requests
             MPI_Send(&timestamp, 1, MPI_INT, i, REQUEST, MPI_COMM_WORLD);
         }
+
+        analyze_sets();
 
         {
             auto ul = std::unique_lock<std::mutex>(lck);
@@ -129,16 +234,15 @@ void performer_func()
         MPI_Send(&lamport_clock, 1, MPI_INT, i, DONE, MPI_COMM_WORLD);
     }
 
+    analyze_sets();
+
     return;
 }
 
 /* Reciever function: Recives messages, both quorum side and process side, and communicates with performer when needed */
 void reciever_func()
 {
-    priority_queue<pair<int, int>, vector<pair<int, int>>, greater<pair<int, int>>> pq;
-    vector<pair<int, int>> buffer;
-
-    while (done_recv < n)
+    while (true)
     {
         int pid;
         MPI_Comm_rank(MPI_COMM_WORLD, &pid);
@@ -161,12 +265,20 @@ void reciever_func()
         {
             print("recieved DONE from " + to_string(sender_id));
             done_recv++;
+            analyze_sets();
+
+            if (done_recv == n)
+            {
+                analyze_sets();
+                break;
+            }
         }
 
         else if (tag == FAIL)
         {
             print("recieved FAIL from " + to_string(sender_id));
             failSet.insert(sender_id); // If recieved fail, add to failSet. No need to add to grant set cause it won't be removed
+            analyze_sets();
         }
 
         else if (tag == REPLY)
@@ -192,6 +304,8 @@ void reciever_func()
 
                 cv.notify_one();
             }
+
+            analyze_sets();
         }
 
         else if (tag == INQUIRE)
@@ -203,7 +317,7 @@ void reciever_func()
                 lamport_clock.fetch_add(1);
                 int timestamp = lamport_clock.load();
 
-                if(recvSet.find(sender_id) == recvSet.end())
+                if (recvSet.find(sender_id) == recvSet.end())
                 {
                     recvSet.insert(sender_id);
                 }
@@ -211,6 +325,8 @@ void reciever_func()
                 print("sending YEILD to " + to_string(sender_id));
                 MPI_Send(&timestamp, 1, MPI_INT, sender_id, YEILD, MPI_COMM_WORLD);
             }
+
+            analyze_sets();
         }
 
         /* Three types as recieved by the quorum side of the process */
@@ -247,6 +363,8 @@ void reciever_func()
                     buffer.push_back(std::make_pair(sender_id, sender_clock));
                 }
             }
+
+            analyze_sets();
         }
 
         else if (tag == YEILD)
@@ -285,6 +403,8 @@ void reciever_func()
                 print("sending REPLY to " + to_string(new_dest));
                 MPI_Send(&timestamp, 1, MPI_INT, new_dest, REPLY, MPI_COMM_WORLD);
             }
+
+            analyze_sets();
         }
 
         else if (tag == RELEASE)
@@ -324,6 +444,8 @@ void reciever_func()
                 print("sending REPLY to " + to_string(new_dest));
                 MPI_Send(&timestamp, 1, MPI_INT, new_dest, REPLY, MPI_COMM_WORLD);
             }
+
+            analyze_sets();
         }
     }
 
