@@ -36,6 +36,7 @@
 #define ADD 12
 #define ERASE 13
 #define POP 14
+#define CLEAR 15
 
 using namespace std;
 
@@ -122,7 +123,7 @@ void analyze_sets()
     return;
 }
 
-void set_operations(int setName, int operation, int element)
+void set_handler(int setName, int operation, int element)
 {
     set_lock.lock();
     if (setName == RECVSET)
@@ -143,6 +144,7 @@ void set_operations(int setName, int operation, int element)
         {
             failSet.insert(element);
         }
+
         else if (operation == ERASE)
         {
             failSet.erase(element);
@@ -167,10 +169,61 @@ void set_operations(int setName, int operation, int element)
         {
             buffer.push_back(std::make_pair(element, lamport_clock.load()));
         }
+
+        if (operation == CLEAR)
+        {
+            buffer.clear();
+        }
     }
-    
+
     set_lock.unlock();
     return;
+}
+
+bool is_set_empty(int setName)
+{
+    set_lock.lock();
+    bool ans = false;
+    if (setName == RECVSET)
+    {
+        ans = recvSet.empty();
+    }
+
+    else if (setName == FAILSET)
+    {
+        ans = failSet.empty();
+    }
+
+    else if(setName == PQ)
+    {
+        ans = pq.empty();
+    }
+
+    else if(setName == BUFFER)
+    {
+        ans = buffer.empty();
+    }
+
+    set_lock.unlock();
+    return ans;
+}
+
+bool set_contains(int setName, int element)
+{
+    bool ans = false;
+    set_lock.lock();
+    if (setName == RECVSET)
+    {
+        ans = (recvSet.find(element) != recvSet.end());
+    }
+
+    else if (setName == FAILSET)
+    {
+        ans = (failSet.find(element) != failSet.end());
+    }
+
+    set_lock.unlock();
+    return ans;
 }
 
 /* Critical section function */
@@ -206,18 +259,23 @@ void performer_func()
         }
 
         // Performs internal computations
+        lamport_clock.fetch_add(1);
         print("performing internal computations");
         this_thread::sleep_for(std::chrono::milliseconds(int(Timer(a))));
-        print("finished doing internal computations, sending requests");
+        print("finished doing internal computations");
 
+
+        // Sending requests
+        lamport_clock.fetch_add(1);
+        string str = "Sending REQUEST to quorum members:";
         for (auto i : quorum)
         {
-            recvSet.insert(i);
+            str += " " + to_string(i);
+            set_handler(RECVSET, ADD, i);
             int timestamp = lamport_clock.load();
-
-            // Sending requests
             MPI_Send(&timestamp, 1, MPI_INT, i, REQUEST, MPI_COMM_WORLD);
         }
+        print(str);
 
         analyze_sets();
 
@@ -229,13 +287,13 @@ void performer_func()
         critical_section();
     }
 
+    lamport_clock.fetch_add(1);
     for (int i = 0; i < n; i++)
     {
         MPI_Send(&lamport_clock, 1, MPI_INT, i, DONE, MPI_COMM_WORLD);
     }
 
     analyze_sets();
-
     return;
 }
 
@@ -277,7 +335,7 @@ void reciever_func()
         else if (tag == FAIL)
         {
             print("recieved FAIL from " + to_string(sender_id));
-            failSet.insert(sender_id); // If recieved fail, add to failSet. No need to add to grant set cause it won't be removed
+            set_handler(FAILSET, ADD, sender_id);
             analyze_sets();
         }
 
@@ -285,17 +343,17 @@ void reciever_func()
         {
             print("recieved REPLY from " + to_string(sender_id));
 
-            if (failSet.find(sender_id) != failSet.end())
+            if (set_contains(FAILSET, sender_id))
             {
-                failSet.erase(sender_id);
+                set_handler(FAILSET, ERASE, sender_id);
             }
 
-            if (recvSet.find(sender_id) != recvSet.end())
+            if (set_contains(RECVSET, sender_id))
             {
-                recvSet.erase(sender_id);
+                set_handler(RECVSET, ERASE, sender_id);
             }
 
-            if (recvSet.empty() && failSet.empty())
+            if (is_set_empty(RECVSET) && is_set_empty(FAILSET))
             {
                 {
                     auto ul = std::unique_lock<std::mutex>(lck);
@@ -312,14 +370,14 @@ void reciever_func()
         {
             print("recieved INQUIRE from " + to_string(sender_id));
 
-            if (!failSet.empty() || !recvSet.empty())
+            if (!is_set_empty(FAILSET) || !is_set_empty(RECVSET))
             {
                 lamport_clock.fetch_add(1);
                 int timestamp = lamport_clock.load();
 
-                if (recvSet.find(sender_id) == recvSet.end())
+                if (!set_contains(RECVSET, sender_id)) // If recv set is not waiting for this sender's approval, it will now wait for it as it is sending INQUIRE   
                 {
-                    recvSet.insert(sender_id);
+                    set_handler(RECVSET, ADD, sender_id);
                 }
 
                 print("sending YEILD to " + to_string(sender_id));
@@ -333,15 +391,13 @@ void reciever_func()
         else if (tag == REQUEST)
         {
             print("recieved REQUEST from " + to_string(sender_id));
-
-            if (pq.empty())
+            if (is_set_empty(PQ) == true)
             {
                 print("sending REPLY to " + to_string(sender_id));
                 lamport_clock.fetch_add(1);
                 MPI_Send(&lamport_clock, 1, MPI_INT, sender_id, REPLY, MPI_COMM_WORLD);
-                pq.push(std::make_pair(sender_id, sender_clock));
+                set_handler(PQ, ADD, sender_id);
             }
-
             else
             {
                 int last_send_pid = pq.top().first;
@@ -352,7 +408,7 @@ void reciever_func()
                     print("sending FAIL to " + to_string(sender_id));
                     lamport_clock.fetch_add(1);
                     MPI_Send(&lamport_clock, 1, MPI_INT, sender_id, FAIL, MPI_COMM_WORLD);
-                    pq.push(std::make_pair(sender_id, sender_clock));
+                    set_handler(PQ, ADD, sender_id);
                 }
 
                 else if (last_send_time > sender_clock || (last_send_time == sender_clock && last_send_pid > sender_id))
@@ -360,7 +416,12 @@ void reciever_func()
                     print("sending INQUIRE to " + to_string(last_send_pid));
                     lamport_clock.fetch_add(1);
                     MPI_Send(&lamport_clock, 1, MPI_INT, last_send_pid, INQUIRE, MPI_COMM_WORLD);
-                    buffer.push_back(std::make_pair(sender_id, sender_clock));
+                    set_handler(BUFFER, ADD, sender_id);
+                }
+
+                else
+                {
+                    std::cout << "Error Here\n";
                 }
             }
 
@@ -371,11 +432,11 @@ void reciever_func()
         {
             print("recieved YEILD from " + to_string(sender_id));
 
-            if (!buffer.empty())
+            if (!is_set_empty(BUFFER))
             {
                 for (int i = 0; i < buffer.size(); i++)
                 {
-                    pq.push(std::make_pair(buffer[i].first, buffer[i].second));
+                    set_handler(PQ, ADD, buffer[i].first);
                 }
 
                 int new_dest = pq.top().first;
@@ -391,10 +452,10 @@ void reciever_func()
                     }
                 }
 
-                buffer.clear();
+                set_handler(BUFFER, CLEAR, 0);
             }
 
-            if (!pq.empty())
+            if (!is_set_empty(PQ))
             {
                 int new_dest = pq.top().first;
                 lamport_clock.fetch_add(1);
@@ -410,13 +471,13 @@ void reciever_func()
         else if (tag == RELEASE)
         {
             print("recieved RELEASE from " + to_string(sender_id));
-            pq.pop();
+            set_handler(PQ, POP, 0);
 
-            if (!buffer.empty())
+            if (!is_set_empty(BUFFER))
             {
                 for (int i = 0; i < buffer.size(); i++)
                 {
-                    pq.push(std::make_pair(buffer[i].first, buffer[i].second));
+                    set_handler(PQ, ADD, buffer[i].first);
                 }
 
                 int new_dest = pq.top().first;
@@ -432,10 +493,11 @@ void reciever_func()
                     }
                 }
 
-                buffer.clear();
+                // buffer.clear();
+                set_handler(BUFFER, CLEAR, 0);
             }
 
-            if (!pq.empty())
+            if (!is_set_empty(PQ))
             {
                 int new_dest = pq.top().first;
                 lamport_clock.fetch_add(1);
