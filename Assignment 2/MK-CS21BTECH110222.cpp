@@ -405,7 +405,7 @@ void reciever_func()
 
                 if (last_send_time < sender_clock || (last_send_time == sender_clock && last_send_pid < sender_id))
                 {
-                    print("sending FAIL to " + to_string(sender_id));
+                    print("sending FAIL(1) to " + to_string(sender_id));
                     lamport_clock.fetch_add(1);
                     MPI_Send(&lamport_clock, 1, MPI_INT, sender_id, FAIL, MPI_COMM_WORLD);
                     set_handler(PQ, ADD, sender_id);
@@ -447,7 +447,7 @@ void reciever_func()
                 {
                     if (i.first != new_dest)
                     {
-                        print("sending FAIL to " + to_string(i.first));
+                        print("sending FAIL(2) to " + to_string(i.first));
                         MPI_Send(&timestamp, 1, MPI_INT, i.first, FAIL, MPI_COMM_WORLD);
                     }
                 }
@@ -488,7 +488,7 @@ void reciever_func()
                 {
                     if (i.first != new_dest)
                     {
-                        print("sending FAIL to " + to_string(i.first));
+                        print("sending FAIL(3) to " + to_string(i.first));
                         MPI_Send(&timestamp, 1, MPI_INT, i.first, FAIL, MPI_COMM_WORLD);
                     }
                 }
