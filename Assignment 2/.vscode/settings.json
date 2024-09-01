@@ -1,8 +1,0 @@
-{
-    "files.associations": {
-        "ctime": "cpp",
-        "mutex": "cpp",
-        "shared_mutex": "cpp",
-        "syncstream": "cpp"
-    }
-}

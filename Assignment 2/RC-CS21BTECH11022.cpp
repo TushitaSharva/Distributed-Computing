@@ -6,8 +6,6 @@
     All processes work induvidually for outCSTime (variable, exponential) seconds
     Then they would want to enter mutual exclusion
 
-
-
     - reqSet: a set which contains those it needs to send request and recieve reply from
             (initially it should be set of all pids lesser than the rank)
     - defSet : a set containing processes whose messages are deferred
@@ -209,6 +207,7 @@ void reciever_func(my_data *data)
         int recv_msg = 0;
         MPI_Status status;
         MPI_Recv(&recv_msg, 1, MPI_INT, MPI::ANY_SOURCE, MPI::ANY_TAG, MPI_COMM_WORLD, &status);
+        message_complexity.fetch_add(1);
         data->lamport_clock.store(max(data->lamport_clock.load(), recv_msg));
         data->lamport_clock.fetch_add(1);
 
@@ -373,8 +372,8 @@ int main(int argc, char *argv[])
     MPI_Finalize();
     delete data;
 
-    ofstream message_complexity_file("messages_RC.txt", ios::app);
-    message_complexity_file << pid << ": " << message_complexity << " ";
+    ofstream message_complexity_file("messages_RC.csv", ios::app);
+    message_complexity_file << message_complexity << "\n";
     message_complexity_file.close();
 
     return 0;
